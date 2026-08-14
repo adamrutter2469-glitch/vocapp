@@ -1,9 +1,10 @@
 """
 DuckDB storage layer for vocapp.
 
-Phase 1 schema, per the project plan:
-  words          - one row per vocab word, definition typed in manually
-                    (dictionary auto-lookup is Phase 2)
+Schema, per the project plan:
+  words          - one row per vocab word. Phase 2 adds synonyms/phonetic,
+                    filled in by dictionary.py's auto-lookup - still
+                    editable/overridable by hand.
   quiz_attempts  - one row per graded quiz attempt, so accuracy history
                     persists permanently (the whole point, per the plan:
                     "store your actual definition attempts permanently")
@@ -35,6 +36,10 @@ def _ensure_schema(con):
             date_added      TIMESTAMP NOT NULL
         )
     """)
+    # Added in Phase 2 - IF NOT EXISTS makes this a safe no-op migration
+    # against a database created under the Phase 1 schema.
+    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS synonyms TEXT")
+    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS phonetic TEXT")
     con.execute("CREATE SEQUENCE IF NOT EXISTS attempt_id_seq START 1")
     con.execute("""
         CREATE TABLE IF NOT EXISTS quiz_attempts (
@@ -50,16 +55,18 @@ def _ensure_schema(con):
     """)
 
 
-def add_word(word: str, definition: str, part_of_speech: str = "", example: str = ""):
+def add_word(word: str, definition: str, part_of_speech: str = "", example: str = "",
+             synonyms: list[str] | None = None, phonetic: str = ""):
     """Upsert - re-adding an existing word overwrites its definition, so
     corrections don't require deleting first."""
     con = get_connection()
     con.execute(
         """
-        INSERT OR REPLACE INTO words (word, definition, part_of_speech, example, date_added)
-        VALUES (?, ?, ?, ?, COALESCE((SELECT date_added FROM words WHERE word = ?), ?))
+        INSERT OR REPLACE INTO words (word, definition, part_of_speech, example, synonyms, phonetic, date_added)
+        VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT date_added FROM words WHERE word = ?), ?))
         """,
         [word.strip(), definition.strip(), part_of_speech.strip(), example.strip(),
+         ", ".join(synonyms) if synonyms else "", phonetic.strip(),
          word.strip(), datetime.now(timezone.utc)],
     )
     con.close()
@@ -77,13 +84,13 @@ def get_all_words():
     con = get_connection()
     rows = con.execute("""
         SELECT
-            w.word, w.definition, w.part_of_speech, w.example, w.date_added,
+            w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic, w.date_added,
             COUNT(a.id)                    AS times_quizzed,
             ROUND(AVG(a.accuracy), 1)      AS avg_accuracy,
             MAX(a.attempt_date)            AS last_quizzed
         FROM words w
         LEFT JOIN quiz_attempts a ON a.word = w.word
-        GROUP BY w.word, w.definition, w.part_of_speech, w.example, w.date_added
+        GROUP BY w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic, w.date_added
         ORDER BY w.date_added DESC
     """).fetchall()
     cols = [d[0] for d in con.description]
@@ -94,13 +101,16 @@ def get_all_words():
 def get_word(word: str):
     con = get_connection()
     row = con.execute(
-        "SELECT word, definition, part_of_speech, example FROM words WHERE word = ?",
+        "SELECT word, definition, part_of_speech, example, synonyms, phonetic FROM words WHERE word = ?",
         [word],
     ).fetchone()
     con.close()
     if row is None:
         return None
-    return {"word": row[0], "definition": row[1], "part_of_speech": row[2], "example": row[3]}
+    return {
+        "word": row[0], "definition": row[1], "part_of_speech": row[2],
+        "example": row[3], "synonyms": row[4], "phonetic": row[5],
+    }
 
 
 def random_word():

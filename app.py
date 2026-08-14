@@ -1,13 +1,16 @@
 """
-vocapp - Phase 1 MVP
-Add word -> quiz word (typed definition) -> AI grade -> show correct
-definition -> save attempt. Per the project plan's phased build-out;
-Phase 2 (dictionary API, synonyms, examples) and Phase 3 (spaced
-repetition, mastery scoring) come later.
+vocapp - Phase 1 + Phase 2
+Phase 1: add word -> quiz word (typed definition) -> AI grade -> show
+correct definition -> save attempt.
+Phase 2: dictionary auto-lookup on add (definition/part of speech/
+example/synonyms fill in automatically, still editable before saving).
+Phase 3 (spaced repetition, mastery scoring) comes later.
 """
 
+import requests
 import streamlit as st
 import db
+import dictionary
 import grading
 
 st.set_page_config(page_title="vocapp", page_icon="📚", layout="centered")
@@ -35,9 +38,15 @@ with tab_quiz:
 
     if st.session_state.quiz_word:
         word_row = db.get_word(st.session_state.quiz_word)
-        st.header(word_row["word"])
+        header = word_row["word"]
+        st.header(header)
+        caption_bits = []
         if word_row["part_of_speech"]:
-            st.caption(word_row["part_of_speech"])
+            caption_bits.append(word_row["part_of_speech"])
+        if word_row["phonetic"]:
+            caption_bits.append(word_row["phonetic"])
+        if caption_bits:
+            st.caption("  •  ".join(caption_bits))
 
         if st.session_state.quiz_result is None:
             answer = st.text_area("Type your definition:", key="answer_box", height=100)
@@ -67,6 +76,8 @@ with tab_quiz:
             st.markdown(f"**Dictionary definition:** {word_row['definition']}")
             if word_row["example"]:
                 st.markdown(f"*Example: {word_row['example']}*")
+            if word_row["synonyms"]:
+                st.caption(f"Synonyms: {word_row['synonyms']}")
             if r.got_right:
                 st.markdown("**What you got right:**")
                 for item in r.got_right:
@@ -85,22 +96,89 @@ with tab_quiz:
 # ------------------------------------------------------------
 # Add Word
 # ------------------------------------------------------------
+
+
+# Streamlit gotcha: popping a keyed widget's session_state entry does NOT
+# reliably reset that widget on the next run - the frontend can keep
+# showing the stale value. The bulletproof fix is to version the widget
+# keys themselves, so "clearing the form" means rendering brand-new
+# widgets with no prior state, not mutating existing ones.
+st.session_state.setdefault("form_version", 0)
+
+
+def _keys():
+    v = st.session_state["form_version"]
+    return {
+        "word": f"add_word_{v}", "definition": f"definition_input_{v}",
+        "pos": f"pos_input_{v}", "example": f"example_input_{v}",
+        "synonyms": f"synonyms_input_{v}",
+    }
+
+
+def _do_lookup():
+    k = _keys()
+    word = st.session_state.get(k["word"], "").strip()
+    if not word:
+        st.session_state["add_word_msg"] = ("warning", "Type a word first.")
+        return
+    try:
+        info = dictionary.lookup_word(word)
+        st.session_state[k["definition"]] = info["definition"]
+        st.session_state[k["pos"]] = info["part_of_speech"]
+        st.session_state[k["example"]] = info["example"]
+        st.session_state[k["synonyms"]] = ", ".join(info["synonyms"])
+        st.session_state["phonetic_lookup"] = info["phonetic"]
+        st.session_state["add_word_msg"] = (
+            "success", "Filled in from the dictionary - review and adjust, then hit Add.",
+        )
+    except dictionary.LookupNotFound:
+        st.session_state["add_word_msg"] = (
+            "warning", f"No dictionary entry for '{word}' - fill in the definition yourself below.",
+        )
+    except requests.RequestException:
+        st.session_state["add_word_msg"] = (
+            "error", "Dictionary lookup failed (network error) - fill in the definition yourself below.",
+        )
+
+
+def _do_add():
+    k = _keys()
+    word = st.session_state.get(k["word"], "").strip()
+    definition = st.session_state.get(k["definition"], "").strip()
+    if not word or not definition:
+        st.session_state["add_word_msg"] = ("warning", "Word and definition are required.")
+        return
+    pos = st.session_state.get(k["pos"], "")
+    example = st.session_state.get(k["example"], "")
+    synonyms_list = [s.strip() for s in st.session_state.get(k["synonyms"], "").split(",") if s.strip()]
+    phonetic = st.session_state.get("phonetic_lookup", "")
+    db.add_word(word, definition, pos, example, synonyms_list, phonetic)
+    st.session_state.pop("phonetic_lookup", None)
+    st.session_state["form_version"] += 1  # next render uses fresh, empty widget keys
+    st.session_state.quiz_word = None  # this word may now be the only one - force Quiz Me to re-pick
+    st.session_state["add_word_msg"] = ("success", f"Added **{word}**.")
+
+
 with tab_add:
     st.subheader("Add a word")
-    with st.form("add_word_form", clear_on_submit=True):
-        word = st.text_input("Word")
-        definition = st.text_area("Definition", height=80)
-        part_of_speech = st.text_input("Part of speech (optional)")
-        example = st.text_area("Example sentence (optional)", height=60)
-        submitted = st.form_submit_button("Add", type="primary")
-        if submitted:
-            if not word.strip() or not definition.strip():
-                st.warning("Word and definition are required.")
-            else:
-                db.add_word(word, definition, part_of_speech, example)
-                st.session_state.quiz_word = None  # force Quiz Me to re-pick, this word may now be the only one
-                st.success(f"Added **{word.strip()}**.")
-                st.rerun()
+    k = _keys()
+    st.text_input("Word", key=k["word"], placeholder="e.g. fastidious")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.button("Look up", on_click=_do_lookup, help="Auto-fill from the dictionary")
+    with c2:
+        st.button("Add", type="primary", on_click=_do_add)
+
+    st.text_area("Definition", key=k["definition"], height=80)
+    st.text_input("Part of speech (optional)", key=k["pos"])
+    st.text_area("Example sentence (optional)", key=k["example"], height=60)
+    st.text_input("Synonyms, comma-separated (optional)", key=k["synonyms"])
+    if st.session_state.get("phonetic_lookup"):
+        st.caption(f"Pronunciation: {st.session_state['phonetic_lookup']}")
+
+    if "add_word_msg" in st.session_state:
+        kind, msg = st.session_state.pop("add_word_msg")
+        getattr(st, kind)(msg)
 
 # ------------------------------------------------------------
 # My Words
@@ -115,10 +193,13 @@ with tab_words:
             avg = f"{w['avg_accuracy']:.0f}%" if w["avg_accuracy"] is not None else "not quizzed yet"
             with st.expander(f"{w['word']}  —  {avg}"):
                 st.markdown(f"**Definition:** {w['definition']}")
-                if w["part_of_speech"]:
-                    st.caption(w["part_of_speech"])
+                meta_bits = [b for b in (w["part_of_speech"], w["phonetic"]) if b]
+                if meta_bits:
+                    st.caption("  •  ".join(meta_bits))
                 if w["example"]:
                     st.markdown(f"*Example: {w['example']}*")
+                if w["synonyms"]:
+                    st.caption(f"Synonyms: {w['synonyms']}")
                 st.caption(f"Quizzed {w['times_quizzed']} time(s)"
                            + (f", last on {w['last_quizzed']:%b %d, %Y}" if w["last_quizzed"] else ""))
                 if w["times_quizzed"] > 0:
