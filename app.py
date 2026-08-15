@@ -586,13 +586,15 @@ with tab_words:
                 with c_next:
                     st.button(">", key=f"words_next_{key_suffix}", on_click=_words_next_page, disabled=(page >= total_pages - 1), help="Next page")
 
-            # Three tight clusters (filter+sort / select+clear / trash)
-            # spread across the row via CSS space-between, rather than 5
-            # flat proportional columns - that left big dead-space gaps
-            # after each button, since a column's width and its button's
-            # actual (much narrower) content width are two different things.
+            # Two tight clusters - filter+sort on the left, and Select
+            # All/Clear All/Trash all sharing one uniform small gap on the
+            # right (so Clear All sits exactly as close to Trash as it
+            # does to Select All) - spread apart via CSS space-between.
+            # Flat proportional columns left big dead-space gaps after
+            # each button, since a column's width and its button's actual
+            # (much narrower) content width are two different things.
             with st.container(key="words_toolbar_row"):
-                c_left, c_mid, c_right = st.columns([1, 1, 1])
+                c_left, c_right = st.columns([1, 1])
                 with c_left:
                     c_filter, c_sort = st.columns(2, gap="small")
                     with c_filter:
@@ -607,17 +609,17 @@ with tab_words:
                                 "Sort by", SORT_OPTIONS, key="words_sort",
                                 on_change=_reset_words_page, label_visibility="collapsed",
                             )
-                with c_mid:
-                    c_selall, c_clearall = st.columns(2, gap="small")
+                with c_right:
+                    c_selall, c_clearall, c_trash = st.columns(3, gap="small")
                     with c_selall:
                         st.button("Select All", key="select_all_btn", on_click=_select_all, args=(words,))
                     with c_clearall:
                         st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
-                with c_right:
-                    st.button(
-                        "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
-                        disabled=(len(selected_words) == 0), help="Delete selected",
-                    )
+                    with c_trash:
+                        st.button(
+                            "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
+                            disabled=(len(selected_words) == 0), help="Delete selected",
+                        )
 
             if "bulk_delete_msg" in st.session_state:
                 st.success(st.session_state.pop("bulk_delete_msg"))
