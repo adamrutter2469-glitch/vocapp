@@ -115,14 +115,14 @@ def get_all_words():
     rows = con.execute("""
         SELECT
             w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic,
-            w.audio_url, w.date_added, w.next_review_date, w.interval_days,
+            w.audio_url, w.date_added, w.next_review_date, w.interval_days, w.repetition,
             COUNT(a.id)                    AS times_quizzed,
             ROUND(AVG(a.accuracy), 1)      AS avg_accuracy,
             MAX(a.attempt_date)            AS last_quizzed
         FROM words w
         LEFT JOIN quiz_attempts a ON a.word = w.word
         GROUP BY w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic,
-                 w.audio_url, w.date_added, w.next_review_date, w.interval_days
+                 w.audio_url, w.date_added, w.next_review_date, w.interval_days, w.repetition
         ORDER BY w.date_added DESC
     """).fetchall()
     cols = [d[0] for d in con.description]
