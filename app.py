@@ -569,11 +569,7 @@ with tab_words:
                 with c_next:
                     st.button(">", key=f"words_next_{key_suffix}", on_click=_words_next_page, disabled=(page >= total_pages - 1), help="Next page")
 
-            c_selall, c_clearall, c_filter, c_sort, c_trash = st.columns([1.4, 1.3, 0.5, 0.5, 0.5], gap="small")
-            with c_selall:
-                st.button("Select All", key="select_all_btn", on_click=_select_all, args=(words,))
-            with c_clearall:
-                st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
+            c_filter, c_sort, c_selall, c_clearall, c_trash = st.columns([0.5, 0.5, 1.4, 1.3, 0.5], gap="small")
             with c_filter:
                 with st.popover("🔽", help="Filter"):
                     st.radio(
@@ -586,6 +582,10 @@ with tab_words:
                         "Sort by", SORT_OPTIONS, key="words_sort",
                         on_change=_reset_words_page, label_visibility="collapsed",
                     )
+            with c_selall:
+                st.button("Select All", key="select_all_btn", on_click=_select_all, args=(words,))
+            with c_clearall:
+                st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
             with c_trash:
                 st.button(
                     "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
