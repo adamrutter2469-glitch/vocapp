@@ -32,9 +32,14 @@ def lookup_word(word: str) -> dict:
         raise LookupNotFound(f"No dictionary entry found for '{word}'.")
 
     entry = data[0]
+    phonetics = entry.get("phonetics", [])
     phonetic = entry.get("phonetic", "") or next(
-        (p.get("text", "") for p in entry.get("phonetics", []) if p.get("text")), ""
+        (p.get("text", "") for p in phonetics if p.get("text")), ""
     )
+    # Real native-speaker recordings (Wikimedia Commons-sourced), when the
+    # entry has one - not every phonetics[] entry carries audio, so take
+    # the first non-empty one rather than assuming index 0 has it.
+    audio_url = next((p.get("audio", "") for p in phonetics if p.get("audio")), "")
 
     meanings = entry.get("meanings", [])
     if not meanings:
@@ -66,4 +71,5 @@ def lookup_word(word: str) -> dict:
         "example": first_def.get("example", ""),
         "synonyms": deduped_synonyms[:8],  # cap - long tails are usually noise
         "phonetic": phonetic,
+        "audio_url": audio_url,
     }

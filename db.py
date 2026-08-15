@@ -40,6 +40,9 @@ def _ensure_schema(con):
     # against a database created under the Phase 1 schema.
     con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS synonyms TEXT")
     con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS phonetic TEXT")
+    # Real native-speaker pronunciation clip URL, when the dictionary API
+    # has one for this word - empty string means fall back to browser TTS.
+    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS audio_url TEXT")
     # Added in Phase 3 - SM-2-style spaced repetition state. DEFAULT
     # CURRENT_DATE on next_review_date means existing words (added before
     # this migration) become immediately due, same as a brand new word -
@@ -64,7 +67,7 @@ def _ensure_schema(con):
 
 
 def add_word(word: str, definition: str, part_of_speech: str = "", example: str = "",
-             synonyms: list[str] | None = None, phonetic: str = ""):
+             synonyms: list[str] | None = None, phonetic: str = "", audio_url: str = ""):
     """Upsert - re-adding an existing word overwrites its definition, so
     corrections don't require deleting first. Spaced-repetition schedule
     fields are preserved across a correction (COALESCE from the existing
@@ -75,9 +78,9 @@ def add_word(word: str, definition: str, part_of_speech: str = "", example: str 
     con.execute(
         """
         INSERT OR REPLACE INTO words
-            (word, definition, part_of_speech, example, synonyms, phonetic, date_added,
+            (word, definition, part_of_speech, example, synonyms, phonetic, audio_url, date_added,
              repetition, ease_factor, interval_days, next_review_date)
-        VALUES (?, ?, ?, ?, ?, ?,
+        VALUES (?, ?, ?, ?, ?, ?, ?,
                 COALESCE((SELECT date_added FROM words WHERE word = ?), ?),
                 COALESCE((SELECT repetition FROM words WHERE word = ?), 0),
                 COALESCE((SELECT ease_factor FROM words WHERE word = ?), 2.5),
@@ -85,9 +88,17 @@ def add_word(word: str, definition: str, part_of_speech: str = "", example: str 
                 COALESCE((SELECT next_review_date FROM words WHERE word = ?), CURRENT_DATE))
         """,
         [w, definition.strip(), part_of_speech.strip(), example.strip(),
-         ", ".join(synonyms) if synonyms else "", phonetic.strip(),
+         ", ".join(synonyms) if synonyms else "", phonetic.strip(), audio_url.strip(),
          w, datetime.now(timezone.utc), w, w, w, w],
     )
+    con.close()
+
+
+def set_audio_url(word: str, audio_url: str):
+    """Backfill helper - update just the audio clip for an existing word
+    without touching its definition or anything else."""
+    con = get_connection()
+    con.execute("UPDATE words SET audio_url = ? WHERE word = ?", [audio_url.strip(), word])
     con.close()
 
 
@@ -103,15 +114,15 @@ def get_all_words():
     con = get_connection()
     rows = con.execute("""
         SELECT
-            w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic, w.date_added,
-            w.next_review_date, w.interval_days,
+            w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic,
+            w.audio_url, w.date_added, w.next_review_date, w.interval_days,
             COUNT(a.id)                    AS times_quizzed,
             ROUND(AVG(a.accuracy), 1)      AS avg_accuracy,
             MAX(a.attempt_date)            AS last_quizzed
         FROM words w
         LEFT JOIN quiz_attempts a ON a.word = w.word
         GROUP BY w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic,
-                 w.date_added, w.next_review_date, w.interval_days
+                 w.audio_url, w.date_added, w.next_review_date, w.interval_days
         ORDER BY w.date_added DESC
     """).fetchall()
     cols = [d[0] for d in con.description]
@@ -122,7 +133,7 @@ def get_all_words():
 def get_word(word: str):
     con = get_connection()
     row = con.execute(
-        "SELECT word, definition, part_of_speech, example, synonyms, phonetic FROM words WHERE word = ?",
+        "SELECT word, definition, part_of_speech, example, synonyms, phonetic, audio_url FROM words WHERE word = ?",
         [word],
     ).fetchone()
     con.close()
@@ -130,7 +141,7 @@ def get_word(word: str):
         return None
     return {
         "word": row[0], "definition": row[1], "part_of_speech": row[2],
-        "example": row[3], "synonyms": row[4], "phonetic": row[5],
+        "example": row[3], "synonyms": row[4], "phonetic": row[5], "audio_url": row[6],
     }
 
 

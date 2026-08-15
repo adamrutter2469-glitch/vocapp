@@ -15,6 +15,7 @@ import streamlit as st
 import db
 import dictionary
 import grading
+import speaker
 
 st.set_page_config(page_title="vocapp", page_icon="📚", layout="centered")
 
@@ -62,6 +63,7 @@ with tab_quiz:
             caption_bits.append(word_row["phonetic"])
         if caption_bits:
             st.caption("  •  ".join(caption_bits))
+        speaker.play_button(word_row["word"], word_row.get("audio_url", ""))
 
         if st.session_state.quiz_result is None:
             answer = st.text_area("Type your definition:", key="answer_box", height=100)
@@ -154,6 +156,7 @@ def _do_lookup():
         st.session_state[k["example"]] = info["example"]
         st.session_state[k["synonyms"]] = ", ".join(info["synonyms"])
         st.session_state["phonetic_lookup"] = info["phonetic"]
+        st.session_state["audio_url_lookup"] = info["audio_url"]
         st.session_state["add_word_msg"] = (
             "success", "Filled in from the dictionary - review and adjust, then hit Add.",
         )
@@ -178,8 +181,10 @@ def _do_add():
     example = st.session_state.get(k["example"], "")
     synonyms_list = [s.strip() for s in st.session_state.get(k["synonyms"], "").split(",") if s.strip()]
     phonetic = st.session_state.get("phonetic_lookup", "")
-    db.add_word(word, definition, pos, example, synonyms_list, phonetic)
+    audio_url = st.session_state.get("audio_url_lookup", "")
+    db.add_word(word, definition, pos, example, synonyms_list, phonetic, audio_url)
     st.session_state.pop("phonetic_lookup", None)
+    st.session_state.pop("audio_url_lookup", None)
     st.session_state["form_version"] += 1  # next render uses fresh, empty widget keys
     st.session_state.quiz_word = None  # this word may now be the only one - force Quiz Me to re-pick
     st.session_state.quiz_result = None
@@ -220,6 +225,7 @@ with tab_words:
         for w in words:
             avg = f"{w['avg_accuracy']:.0f}%" if w["avg_accuracy"] is not None else "not quizzed yet"
             with st.expander(f"{w['word']}  —  {avg}"):
+                speaker.play_button(w["word"], w.get("audio_url", ""))
                 st.markdown(f"**Definition:** {w['definition']}")
                 meta_bits = [b for b in (w["part_of_speech"], w["phonetic"]) if b]
                 if meta_bits:
