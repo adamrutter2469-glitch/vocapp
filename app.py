@@ -612,7 +612,7 @@ with tab_words:
                 with c_right:
                     c_selall, c_clearall, c_trash = st.columns(3, gap="small")
                     with c_selall:
-                        st.button("Select All", key="select_all_btn", on_click=_select_all, args=(words,))
+                        st.button("Select Page", key="select_all_btn", on_click=_select_all, args=(page_words,))
                     with c_clearall:
                         st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
                     with c_trash:
