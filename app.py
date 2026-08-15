@@ -373,13 +373,50 @@ with tab_add:
 # ------------------------------------------------------------
 # My Words
 # ------------------------------------------------------------
+# Paginated (20/page) rather than rendering every word's expander at
+# once - each expander carries its own speaker iframe + delete button,
+# so the widget count (not the DB query, which stays cheap at this
+# scale) is what would slow the page down as the word list grows.
+WORDS_PAGE_SIZE = 20
+st.session_state.setdefault("words_page", 0)
+
+
+def _words_prev_page():
+    st.session_state["words_page"] -= 1
+
+
+def _words_next_page():
+    st.session_state["words_page"] += 1
+
+
 with tab_words:
     words = db.get_all_words()
     if not words:
         st.info("No words yet.")
     else:
-        st.caption(f"{len(words)} word(s)")
-        for w in words:
+        total = len(words)
+        total_pages = -(-total // WORDS_PAGE_SIZE)  # ceil division
+        # Clamp in case the word count shrank since the page was set (e.g.
+        # deleting the last word on the last page).
+        st.session_state["words_page"] = max(0, min(st.session_state["words_page"], total_pages - 1))
+        page = st.session_state["words_page"]
+        start = page * WORDS_PAGE_SIZE
+        end = min(start + WORDS_PAGE_SIZE, total)
+
+        c_prev, c_info, c_next = st.columns([1, 3, 1])
+        with c_prev:
+            st.button("‹ Prev", key="words_prev", on_click=_words_prev_page, disabled=(page == 0))
+        with c_info:
+            st.markdown(
+                f"<div style='text-align:center; padding-top:0.4rem;'>"
+                f"Page {page + 1} of {total_pages} &nbsp;·&nbsp; {start + 1}-{end} of {total}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with c_next:
+            st.button("Next ›", key="words_next", on_click=_words_next_page, disabled=(page >= total_pages - 1))
+
+        for w in words[start:end]:
             avg = f"{w['avg_accuracy']:.0f}%" if w["avg_accuracy"] is not None else "not quizzed yet"
             with st.expander(f"{w['word']}  —  {avg}"):
                 speaker.play_button(w["word"], w.get("audio_url", ""))
@@ -402,6 +439,21 @@ with tab_words:
                 if st.button("Delete", key=f"del_{w['word']}"):
                     db.delete_word(w["word"])
                     st.rerun()
+
+        # Same controls repeated below the list - convenient once a page
+        # of 20 expanders has scrolled the top ones out of view.
+        c_prev2, c_info2, c_next2 = st.columns([1, 3, 1])
+        with c_prev2:
+            st.button("‹ Prev", key="words_prev_bottom", on_click=_words_prev_page, disabled=(page == 0))
+        with c_info2:
+            st.markdown(
+                f"<div style='text-align:center; padding-top:0.4rem;'>"
+                f"Page {page + 1} of {total_pages} &nbsp;·&nbsp; {start + 1}-{end} of {total}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with c_next2:
+            st.button("Next ›", key="words_next_bottom", on_click=_words_next_page, disabled=(page >= total_pages - 1))
 
 # ------------------------------------------------------------
 # Progress
