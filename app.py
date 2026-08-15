@@ -88,6 +88,15 @@ st.markdown(
     .st-key-addword_result {{
         margin-top: -1.1rem;
     }}
+
+    /* Hide Streamlit's native "Press Enter to apply" hint under the Add
+       Word input - that instruction doesn't apply here (Look up/Add are
+       separate buttons, not Enter-to-submit), so it's just noise. Matches
+       on a substring since the widget key is versioned (add_word_0,
+       add_word_1, ...) to reset the field after every Add. */
+    [class*="st-key-add_word_"] [data-testid="InputInstructions"] {{
+        display: none;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
