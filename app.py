@@ -184,11 +184,46 @@ st.markdown(
         min-width: 0 !important;
     }}
 
-    /* Gap between the banner logo and the Quiz Me/Add Word/... tab bar
-       was 16px - halved to 8px. Only one stTabs in the app, so it's safe
-       to target directly rather than scope through a container key. */
-    [data-testid="stTabs"] {{
-        margin-top: -8px;
+    /* Header row: the logo overlays the top-right corner of the tabs
+       row instead of sitting above it in its own banner row. Tried
+       doing this with a real flex row first (tabs + logo as flex
+       siblings), but Streamlit gives every container's children
+       flex:1 1 0% / align-items:stretch by default for its normal
+       vertical stacking - flipping just header_row to row-direction
+       left that stretch behavior in place one level down, so the
+       logo's wrapper kept inflating to 100% width via a circular
+       auto-basis-vs-stretched-child loop. Absolute positioning sits
+       outside that whole flex system, so it sidesteps the fight
+       entirely: the tabs stay a normal untouched full-width block, and
+       the logo overlays on top, positioned purely by pixels. -58px is
+       (tab bar height 40px) - (logo height 98px), so the logo's
+       bottom edge lines up with the tabs' underline and it grows
+       upward into the header's blank space above, instead of downward
+       over the word card underneath. */
+    .st-key-header_row {{
+        position: relative;
+    }}
+    .st-key-header_logo {{
+        position: absolute;
+        top: -58px;
+        right: 0;
+        z-index: 2;
+        /* Every st.container is width:100% of its parent by default
+           (that's a base Streamlit style, separate from the flex
+           stretching fought above) - still true once absolutely
+           positioned, which is why "right: 0" alone wasn't enough to
+           shrink this to the image's actual width. */
+        width: fit-content;
+    }}
+    /* Below ~480px the 4 tab labels alone eat most of the row, and the
+       147px logo starts overlapping "Progress" - simplest fix is to
+       drop the logo on narrow screens rather than shrink it further
+       (it'd stop being recognizable). The tabs still work fine full-
+       width on their own without it. */
+    @media (max-width: 480px) {{
+        .st-key-header_logo {{
+            display: none;
+        }}
     }}
     </style>
     """,
@@ -203,14 +238,21 @@ if "quiz_schedule" not in st.session_state:
     st.session_state.quiz_schedule = None
 st.session_state.setdefault("quiz_form_version", 0)
 
-with st.container(key="banner_row"):
-    # Ratio 3:4:3 puts the image at 4/10 = 40% of the row width, vs.
-    # 1:2:1's 2/4 = 50% before - an exact 20% size reduction, still centered.
-    _banner_l, _banner_c, _banner_r = st.columns([3, 4, 3])
-    with _banner_c:
-        st.image(str(IMAGES_DIR / "vocapp_with_text.png"), use_container_width=True)
-
-tab_quiz, tab_add, tab_words, tab_progress = st.tabs(["Quiz Me", "Add Word", "My Words", "Progress"])
+# Tabs and logo share one header row instead of the logo getting a full
+# banner row of its own above them - reclaims that row for quiz content.
+# Deliberately NOT st.columns here: every tab's content (Quiz Me, Add
+# Word, My Words, Progress - the whole app) lives inside the tabs
+# widget, so nesting st.tabs() itself inside a column would shrink
+# every tab's width down to that column's share, not just the tab bar.
+# Instead, tabs and the logo are two plain siblings inside header_row,
+# and CSS below turns that row into a flex row (see .st-key-header_row)
+# so the logo sits inline at the row's right edge without touching the
+# tabs' own width. The logo is sized to roughly half its old banner
+# height (147px wide, ~98px tall at its 1.5:1 aspect ratio).
+with st.container(key="header_row"):
+    tab_quiz, tab_add, tab_words, tab_progress = st.tabs(["Quiz Me", "Add Word", "My Words", "Progress"])
+    with st.container(key="header_logo"):
+        st.image(str(IMAGES_DIR / "vocapp_with_text.png"), width=147)
 
 # ------------------------------------------------------------
 # Quiz Me
@@ -405,12 +447,22 @@ def _reset_form_after_add():
 
 
 def _save(word, info):
+    # db.add_word() is an upsert (see its docstring) - re-adding an
+    # existing word refreshes its definition rather than erroring or
+    # duplicating, which is useful for corrections. But that also means
+    # accidentally re-adding a word you forgot you already had silently
+    # "succeeds" with no sign anything was different - check first so
+    # the message can tell those two cases apart.
+    already_had_it = db.get_word(word) is not None
     db.add_word(
         word, info["definition"], info["part_of_speech"], info["example"],
         info["synonyms"], info["phonetic"], info["audio_url"],
     )
     _reset_form_after_add()
-    _set_msg("success", f"Added **{word}**.")
+    if already_had_it:
+        _set_msg("warning", f"**{word}** is already in your list.")
+    else:
+        _set_msg("success", f"Added **{word}**.")
 
 
 def _do_lookup():
@@ -612,89 +664,95 @@ with tab_words:
         filter_choice = st.session_state["words_filter"]
         filtered = all_words if filter_choice == "All" else [w for w in all_words if _word_status(w) == filter_choice]
 
+        # Sort/paginate up front, empty-safe, so the toolbar below (which
+        # holds the filter control itself) always renders - even when the
+        # current filter matches zero words. It used to live inside the
+        # "filtered is non-empty" branch, which meant picking a filter
+        # with no matches hid the only control that could change it back.
+        words = _sort_words(filtered, st.session_state["words_sort"])
+        total = len(words)
+        total_pages = -(-total // WORDS_PAGE_SIZE)  # ceil division
+        # Clamp in case the filtered count shrank since the page was
+        # set (e.g. deleting the last word on the last page, or a filter
+        # change leaving fewer/zero pages than the stored page number).
+        st.session_state["words_page"] = max(0, min(st.session_state["words_page"], total_pages - 1))
+        page = st.session_state["words_page"]
+        start = page * WORDS_PAGE_SIZE
+        end = min(start + WORDS_PAGE_SIZE, total)
+        page_words = words[start:end]
+
+        # Selection is tracked per-word (checkbox key = sel_<word>) and
+        # persists across pages/filter/sort changes - counted here
+        # against every word, not just what's currently filtered into
+        # view, so the count and the trash icon's enabled state stay
+        # accurate even for words selected under a different filter.
+        selected_words = [w["word"] for w in all_words if st.session_state.get(f"sel_{w['word']}", False)]
+
+        def _nav_row(key_suffix):
+            """Prev/page-info/Next - used only by the sticky footer now."""
+            c_prev, c_info, c_next = st.columns([0.5, 3, 0.5], gap="small")
+            with c_prev:
+                st.button("<", key=f"words_prev_{key_suffix}", on_click=_words_prev_page, disabled=(page == 0), help="Previous page")
+            with c_info:
+                st.markdown(
+                    f"<div style='padding-top:0.4rem;'>"
+                    f"Page {page + 1} of {total_pages} &nbsp;·&nbsp; {start + 1}-{end} of {total}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with c_next:
+                st.button(">", key=f"words_next_{key_suffix}", on_click=_words_next_page, disabled=(page >= total_pages - 1), help="Next page")
+
+        # Two tight clusters - filter+sort on the left, and Select
+        # All/Clear All/Trash all sharing one uniform small gap on the
+        # right (so Clear All sits exactly as close to Trash as it
+        # does to Select All) - spread apart via CSS space-between.
+        # Flat proportional columns left big dead-space gaps after
+        # each button, since a column's width and its button's actual
+        # (much narrower) content width are two different things.
+        with st.container(key="words_toolbar_row"):
+            c_left, c_right = st.columns([1, 1])
+            with c_left:
+                c_filter, c_sort = st.columns(2, gap="small")
+                with c_filter:
+                    with st.popover("🔽", help="Filter"):
+                        st.radio(
+                            "Filter by", FILTER_OPTIONS, key="words_filter",
+                            on_change=_reset_words_page, label_visibility="collapsed",
+                        )
+                with c_sort:
+                    with st.popover("⇅", help="Sort"):
+                        st.radio(
+                            "Sort by", SORT_OPTIONS, key="words_sort",
+                            on_change=_reset_words_page, label_visibility="collapsed",
+                        )
+            with c_right:
+                c_selall, c_clearall, c_trash = st.columns(3, gap="small")
+                with c_selall:
+                    st.button("Select Page", key="select_all_btn", on_click=_select_all, args=(page_words,))
+                with c_clearall:
+                    st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
+                with c_trash:
+                    st.button(
+                        "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
+                        disabled=(len(selected_words) == 0), help="Delete selected",
+                    )
+
+        if "bulk_delete_msg" in st.session_state:
+            st.success(st.session_state.pop("bulk_delete_msg"))
+
+        if st.session_state["confirm_bulk_delete"]:
+            st.warning(f"Delete {len(selected_words)} word(s)? This can't be undone - their quiz history goes too.")
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                st.button("Yes, delete", key="confirm_bulk_delete_btn", type="primary",
+                           on_click=_do_bulk_delete, args=(selected_words,))
+            with cc2:
+                st.button("Cancel", key="cancel_bulk_delete_btn", on_click=_cancel_bulk_confirm)
+
         if not filtered:
             st.info(f"No words in '{filter_choice}' right now.")
         else:
-            words = _sort_words(filtered, st.session_state["words_sort"])
-            total = len(words)
-            total_pages = -(-total // WORDS_PAGE_SIZE)  # ceil division
-            # Clamp in case the filtered count shrank since the page was
-            # set (e.g. deleting the last word on the last page).
-            st.session_state["words_page"] = max(0, min(st.session_state["words_page"], total_pages - 1))
-            page = st.session_state["words_page"]
-            start = page * WORDS_PAGE_SIZE
-            end = min(start + WORDS_PAGE_SIZE, total)
-            page_words = words[start:end]
-
-            # Selection is tracked per-word (checkbox key = sel_<word>) and
-            # persists across pages/filter/sort changes - counted here
-            # against every word, not just what's currently filtered into
-            # view, so the count and the trash icon's enabled state stay
-            # accurate even for words selected under a different filter.
-            selected_words = [w["word"] for w in all_words if st.session_state.get(f"sel_{w['word']}", False)]
-
-            def _nav_row(key_suffix):
-                """Prev/page-info/Next - used only by the sticky footer now."""
-                c_prev, c_info, c_next = st.columns([0.5, 3, 0.5], gap="small")
-                with c_prev:
-                    st.button("<", key=f"words_prev_{key_suffix}", on_click=_words_prev_page, disabled=(page == 0), help="Previous page")
-                with c_info:
-                    st.markdown(
-                        f"<div style='padding-top:0.4rem;'>"
-                        f"Page {page + 1} of {total_pages} &nbsp;·&nbsp; {start + 1}-{end} of {total}"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-                with c_next:
-                    st.button(">", key=f"words_next_{key_suffix}", on_click=_words_next_page, disabled=(page >= total_pages - 1), help="Next page")
-
-            # Two tight clusters - filter+sort on the left, and Select
-            # All/Clear All/Trash all sharing one uniform small gap on the
-            # right (so Clear All sits exactly as close to Trash as it
-            # does to Select All) - spread apart via CSS space-between.
-            # Flat proportional columns left big dead-space gaps after
-            # each button, since a column's width and its button's actual
-            # (much narrower) content width are two different things.
-            with st.container(key="words_toolbar_row"):
-                c_left, c_right = st.columns([1, 1])
-                with c_left:
-                    c_filter, c_sort = st.columns(2, gap="small")
-                    with c_filter:
-                        with st.popover("🔽", help="Filter"):
-                            st.radio(
-                                "Filter by", FILTER_OPTIONS, key="words_filter",
-                                on_change=_reset_words_page, label_visibility="collapsed",
-                            )
-                    with c_sort:
-                        with st.popover("⇅", help="Sort"):
-                            st.radio(
-                                "Sort by", SORT_OPTIONS, key="words_sort",
-                                on_change=_reset_words_page, label_visibility="collapsed",
-                            )
-                with c_right:
-                    c_selall, c_clearall, c_trash = st.columns(3, gap="small")
-                    with c_selall:
-                        st.button("Select Page", key="select_all_btn", on_click=_select_all, args=(page_words,))
-                    with c_clearall:
-                        st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
-                    with c_trash:
-                        st.button(
-                            "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
-                            disabled=(len(selected_words) == 0), help="Delete selected",
-                        )
-
-            if "bulk_delete_msg" in st.session_state:
-                st.success(st.session_state.pop("bulk_delete_msg"))
-
-            if st.session_state["confirm_bulk_delete"]:
-                st.warning(f"Delete {len(selected_words)} word(s)? This can't be undone - their quiz history goes too.")
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    st.button("Yes, delete", key="confirm_bulk_delete_btn", type="primary",
-                               on_click=_do_bulk_delete, args=(selected_words,))
-                with cc2:
-                    st.button("Cancel", key="cancel_bulk_delete_btn", on_click=_cancel_bulk_confirm)
-
             for w in page_words:
                 avg = f"{w['avg_accuracy']:.0f}%" if w["avg_accuracy"] is not None else "not quizzed yet"
                 row_check, row_expander = st.columns([1, 11])

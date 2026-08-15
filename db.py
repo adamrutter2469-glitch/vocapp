@@ -13,15 +13,35 @@ DB file lives at vocab.duckdb, next to this script - local-only storage,
 no server, matches the "develop locally first" plan.
 """
 
+import time
 import duckdb
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 DB_PATH = Path(__file__).parent / "vocab.duckdb"
 
+# vocab.duckdb lives inside OneDrive's synced Documents folder, so every
+# write (each quiz attempt, each word added) can get OneDrive to grab a
+# brief file lock while it uploads the change - if a read lands in that
+# same instant, duckdb.connect() raises IOException ("being used by
+# another process") even though nothing in this app is holding the file.
+# Retrying a few times with a short backoff rides out that window instead
+# of surfacing it as a crash; a real, non-transient problem (missing
+# file, corrupt DB, actual concurrent app instance) still raises once
+# retries are exhausted.
+_CONNECT_RETRIES = 5
+_CONNECT_RETRY_DELAY_SECONDS = 0.2
+
 
 def get_connection():
-    con = duckdb.connect(str(DB_PATH))
+    for attempt in range(_CONNECT_RETRIES):
+        try:
+            con = duckdb.connect(str(DB_PATH))
+            break
+        except duckdb.IOException:
+            if attempt == _CONNECT_RETRIES - 1:
+                raise
+            time.sleep(_CONNECT_RETRY_DELAY_SECONDS * (attempt + 1))
     _ensure_schema(con)
     return con
 
