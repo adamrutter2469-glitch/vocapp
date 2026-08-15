@@ -104,8 +104,8 @@ st.markdown(
        trick used elsewhere; targeted directly since it's the only
        popover in the app. */
     [data-testid="stPopoverBody"] {{
-        width: 160px !important;
-        min-width: 160px !important;
+        width: 200px !important;
+        min-width: 200px !important;
     }}
 
     /* My Words sticky-footer pagination arrows - dropped the "Prev"/"Next"
