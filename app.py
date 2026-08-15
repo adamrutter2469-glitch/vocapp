@@ -237,7 +237,24 @@ with tab_quiz:
 
     if st.session_state.quiz_word:
         word_row = db.get_word(st.session_state.quiz_word)
-        speaker.word_header(word_row["word"], word_row.get("audio_url", ""))
+
+        if st.session_state.quiz_result is not None:
+            # Next word lives up here (top-right, beside the word) once an
+            # answer's been graded - no need to scroll past the feedback
+            # to move on.
+            c_word, c_next = st.columns([3, 1])
+            with c_word:
+                speaker.word_header(word_row["word"], word_row.get("audio_url", ""))
+            with c_next:
+                if st.button("Next word →", key="next_word_btn_top"):
+                    st.session_state.quiz_word = None
+                    st.session_state.quiz_result = None
+                    st.session_state.quiz_schedule = None
+                    st.session_state["quiz_form_version"] += 1
+                    st.rerun()
+        else:
+            speaker.word_header(word_row["word"], word_row.get("audio_url", ""))
+
         caption_bits = []
         if word_row["part_of_speech"]:
             caption_bits.append(word_row["part_of_speech"])
@@ -331,13 +348,6 @@ with tab_quiz:
                     f"📅 Next review: {sched['next_review_date']:%b %d, %Y} "
                     f"(in {sched['interval_days']} day(s))"
                 )
-
-            if st.button("Next word ->"):
-                st.session_state.quiz_word = None
-                st.session_state.quiz_result = None
-                st.session_state.quiz_schedule = None
-                st.session_state["quiz_form_version"] += 1
-                st.rerun()
 
 # ------------------------------------------------------------
 # Add Word
