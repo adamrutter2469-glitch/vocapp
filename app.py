@@ -98,6 +98,16 @@ st.markdown(
         display: none;
     }}
 
+    /* My Words sort popover - default width was ~320px, halved. Popovers
+       render in a portal straight under <body> (not inside our normal
+       block-container tree), so this can't be scoped via the st-key
+       trick used elsewhere; targeted directly since it's the only
+       popover in the app. */
+    [data-testid="stPopoverBody"] {{
+        width: 160px !important;
+        min-width: 160px !important;
+    }}
+
     /* My Words sticky-footer pagination arrows - dropped the "Prev"/"Next"
        text down to bare < > glyphs, bumped up so a single character still
        reads clearly. */
