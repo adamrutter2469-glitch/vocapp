@@ -97,6 +97,41 @@ st.markdown(
     [class*="st-key-add_word_"] [data-testid="InputInstructions"] {{
         display: none;
     }}
+
+    /* My Words pagination arrows - dropped the "Prev"/"Next" text down to
+       bare < > glyphs, bumped up so a single character still reads clearly. */
+    .st-key-words_prev_top button, .st-key-words_next_top button,
+    .st-key-words_prev_footer button, .st-key-words_next_footer button {{
+        font-size: 1.2rem;
+        font-weight: 700;
+        line-height: 1;
+    }}
+
+    /* Sticky footer (Prev/page-info/Next) pinned to the bottom of the
+       viewport so it's reachable without scrolling back up through a full
+       page of expanders. max-width + auto margins keep it aligned with
+       the centered page content instead of spanning the full viewport. */
+    .st-key-words_sticky_footer {{
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 999;
+        max-width: 736px;
+        margin: 0 auto;
+        padding: 0.5rem 1rem;
+        background: #FFFFFF;
+        border-top: 1px solid rgba(0, 29, 86, 0.15);
+        box-shadow: 0 -2px 10px rgba(0, 29, 86, 0.08);
+    }}
+    /* Room at the bottom of the page so the fixed footer never covers the
+       last couple of words in the list. Applies to every tab (Streamlit
+       keeps all tab panels in one shared block container), but only My
+       Words actually renders the footer, so it's just a bit of harmless
+       extra scroll space elsewhere. */
+    [data-testid="stMainBlockContainer"] {{
+        padding-bottom: 4rem;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -378,8 +413,28 @@ with tab_add:
 # so the widget count (not the DB query, which stays cheap at this
 # scale) is what would slow the page down as the word list grows.
 WORDS_PAGE_SIZE = 20
+SORT_OPTIONS = ["Newest added", "Oldest added", "A → Z", "Z → A", "Highest accuracy", "Lowest accuracy"]
 st.session_state.setdefault("words_page", 0)
 st.session_state.setdefault("confirm_bulk_delete", False)
+st.session_state.setdefault("words_sort", SORT_OPTIONS[0])
+
+
+def _sort_words(words, sort_choice):
+    # db.get_all_words() already comes back newest-first, so that case is
+    # just a pass-through; oldest-first is its exact reverse.
+    if sort_choice == "Oldest added":
+        return list(reversed(words))
+    if sort_choice == "A → Z":
+        return sorted(words, key=lambda w: w["word"].lower())
+    if sort_choice == "Z → A":
+        return sorted(words, key=lambda w: w["word"].lower(), reverse=True)
+    if sort_choice == "Highest accuracy":
+        # Never-quizzed words (avg_accuracy is None) always sink to the
+        # bottom regardless of direction - they don't have a score to rank.
+        return sorted(words, key=lambda w: (w["avg_accuracy"] is None, -(w["avg_accuracy"] or 0)))
+    if sort_choice == "Lowest accuracy":
+        return sorted(words, key=lambda w: (w["avg_accuracy"] is None, w["avg_accuracy"] or 0))
+    return words
 
 
 def _words_prev_page():
@@ -394,24 +449,13 @@ def _reset_words_page():
     st.session_state["words_page"] = 0
 
 
-def _word_status(w):
-    """Same bucketing as db.get_progress_stats() - Mastered requires a
-    real streak (repetition >= 3), not just one lucky high score."""
-    n, avg, rep = w["times_quizzed"], w["avg_accuracy"], w["repetition"] or 0
-    if n and rep >= 3 and avg is not None and avg >= 80:
-        return "Mastered"
-    if n and avg is not None and avg < 60:
-        return "Needs Work"
-    return "Learning"
-
-
-def _select_page(page_words):
-    for w in page_words:
+def _select_all(words):
+    for w in words:
         st.session_state[f"sel_{w['word']}"] = True
 
 
-def _clear_selection(all_words):
-    for w in all_words:
+def _clear_selection(words):
+    for w in words:
         key = f"sel_{w['word']}"
         if key in st.session_state:
             st.session_state[key] = False
@@ -448,98 +492,104 @@ with tab_words:
     if not all_words:
         st.info("No words yet.")
     else:
-        filter_choice = st.selectbox(
-            "Filter", ["All", "Mastered", "Learning", "Needs Work"],
-            key="words_filter", on_change=_reset_words_page,
-        )
-        words = all_words if filter_choice == "All" else [w for w in all_words if _word_status(w) == filter_choice]
+        words = _sort_words(all_words, st.session_state["words_sort"])
+        total = len(words)
+        total_pages = -(-total // WORDS_PAGE_SIZE)  # ceil division
+        # Clamp in case the word count shrank since the page was set (e.g.
+        # deleting the last word on the last page).
+        st.session_state["words_page"] = max(0, min(st.session_state["words_page"], total_pages - 1))
+        page = st.session_state["words_page"]
+        start = page * WORDS_PAGE_SIZE
+        end = min(start + WORDS_PAGE_SIZE, total)
+        page_words = words[start:end]
 
-        if not words:
-            st.info(f"No words in '{filter_choice}' right now.")
-        else:
-            total = len(words)
-            total_pages = -(-total // WORDS_PAGE_SIZE)  # ceil division
-            # Clamp in case the filtered count shrank since the page was
-            # set (e.g. deleting the last word on the last page).
-            st.session_state["words_page"] = max(0, min(st.session_state["words_page"], total_pages - 1))
-            page = st.session_state["words_page"]
-            start = page * WORDS_PAGE_SIZE
-            end = min(start + WORDS_PAGE_SIZE, total)
-            page_words = words[start:end]
+        # Selection is tracked per-word (checkbox key = sel_<word>) and
+        # persists across pages/sort changes - counted here against every
+        # word, not just the current page, so the count and the trash
+        # icon's enabled state stay accurate regardless of what's in view.
+        selected_words = [w["word"] for w in words if st.session_state.get(f"sel_{w['word']}", False)]
 
-            def _pagination_row(key_suffix):
-                c_prev, c_info, c_next = st.columns([1, 3, 1])
-                with c_prev:
-                    st.button("‹ Prev", key=f"words_prev_{key_suffix}", on_click=_words_prev_page, disabled=(page == 0))
-                with c_info:
-                    st.markdown(
-                        f"<div style='text-align:center; padding-top:0.4rem;'>"
-                        f"Page {page + 1} of {total_pages} &nbsp;·&nbsp; {start + 1}-{end} of {total}"
-                        f"</div>",
-                        unsafe_allow_html=True,
+        def _toolbar_row(key_suffix, with_actions):
+            """Prev/page-info/Next always; the select/sort/delete cluster
+            only in the top row (the sticky footer at the bottom is just
+            navigation - see the CSS below)."""
+            cols = st.columns([0.5, 3, 0.5, 1.4, 1.3, 0.5, 0.5], gap="small") if with_actions \
+                else st.columns([0.5, 3, 0.5], gap="small")
+            c_prev, c_info, c_next = cols[0], cols[1], cols[2]
+            with c_prev:
+                st.button("<", key=f"words_prev_{key_suffix}", on_click=_words_prev_page, disabled=(page == 0), help="Previous page")
+            with c_info:
+                st.markdown(
+                    f"<div style='padding-top:0.4rem;'>"
+                    f"Page {page + 1} of {total_pages} &nbsp;·&nbsp; {start + 1}-{end} of {total}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with c_next:
+                st.button(">", key=f"words_next_{key_suffix}", on_click=_words_next_page, disabled=(page >= total_pages - 1), help="Next page")
+            if with_actions:
+                c_selall, c_clearall, c_sort, c_trash = cols[3], cols[4], cols[5], cols[6]
+                with c_selall:
+                    st.button("Select All", key="select_all_btn", on_click=_select_all, args=(words,))
+                with c_clearall:
+                    st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
+                with c_sort:
+                    with st.popover("⇅", help="Sort"):
+                        st.radio(
+                            "Sort by", SORT_OPTIONS, key="words_sort",
+                            on_change=_reset_words_page, label_visibility="collapsed",
+                        )
+                with c_trash:
+                    st.button(
+                        "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
+                        disabled=(len(selected_words) == 0), help="Delete selected",
                     )
-                with c_next:
-                    st.button("Next ›", key=f"words_next_{key_suffix}", on_click=_words_next_page, disabled=(page >= total_pages - 1))
 
-            _pagination_row("top")
+        _toolbar_row("top", with_actions=True)
 
-            # Selection is tracked per-word (checkbox key = sel_<word>) and
-            # persists across pages/filter changes - counted here against
-            # every word, not just the current page or filter, so "N
-            # selected" and the delete button stay accurate regardless of
-            # what's currently in view.
-            selected_words = [w["word"] for w in all_words if st.session_state.get(f"sel_{w['word']}", False)]
+        if "bulk_delete_msg" in st.session_state:
+            st.success(st.session_state.pop("bulk_delete_msg"))
 
-            sel1, sel2, sel3 = st.columns([1, 1, 2])
-            with sel1:
-                st.button("Select page", key="select_page_btn", on_click=_select_page, args=(page_words,))
-            with sel2:
-                st.button("Clear all", key="clear_sel_btn", on_click=_clear_selection, args=(all_words,))
-            with sel3:
-                st.markdown(f"<div style='padding-top:0.4rem;'>{len(selected_words)} selected</div>", unsafe_allow_html=True)
+        if st.session_state["confirm_bulk_delete"]:
+            st.warning(f"Delete {len(selected_words)} word(s)? This can't be undone - their quiz history goes too.")
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                st.button("Yes, delete", key="confirm_bulk_delete_btn", type="primary",
+                           on_click=_do_bulk_delete, args=(selected_words,))
+            with cc2:
+                st.button("Cancel", key="cancel_bulk_delete_btn", on_click=_cancel_bulk_confirm)
 
-            if "bulk_delete_msg" in st.session_state:
-                st.success(st.session_state.pop("bulk_delete_msg"))
+        for w in page_words:
+            avg = f"{w['avg_accuracy']:.0f}%" if w["avg_accuracy"] is not None else "not quizzed yet"
+            row_check, row_expander = st.columns([1, 11])
+            with row_check:
+                st.checkbox("Select", key=f"sel_{w['word']}", label_visibility="collapsed")
+            with row_expander:
+                with st.expander(f"{w['word']}  —  {avg}"):
+                    speaker.play_button(w["word"], w.get("audio_url", ""))
+                    st.markdown(f"**Definition:** {w['definition']}")
+                    meta_bits = [b for b in (w["part_of_speech"], w["phonetic"]) if b]
+                    if meta_bits:
+                        st.caption("  •  ".join(meta_bits))
+                    if w["example"]:
+                        st.markdown(f"*Example: {w['example']}*")
+                    if w["synonyms"]:
+                        st.caption(f"Synonyms: {w['synonyms']}")
+                    st.caption(f"Quizzed {w['times_quizzed']} time(s)"
+                               + (f", last on {w['last_quizzed']:%b %d, %Y}" if w["last_quizzed"] else ""))
+                    if w["next_review_date"]:
+                        st.caption(f"Next review: {w['next_review_date']:%b %d, %Y}")
+                    if w["times_quizzed"] > 0:
+                        st.markdown("**Attempt history:**")
+                        for a in db.get_attempts(w["word"]):
+                            st.markdown(f"- {a['attempt_date']:%b %d}: {a['accuracy']}% — \"{a['your_answer']}\"")
+                    st.button("Delete", key=f"del_{w['word']}", on_click=_do_single_delete, args=(w["word"],))
 
-            if selected_words:
-                if not st.session_state["confirm_bulk_delete"]:
-                    st.button(f"🗑 Delete {len(selected_words)} selected", key="bulk_delete_btn", on_click=_start_bulk_confirm)
-                else:
-                    st.warning(f"Delete {len(selected_words)} word(s)? This can't be undone - their quiz history goes too.")
-                    cc1, cc2 = st.columns(2)
-                    with cc1:
-                        st.button("Yes, delete", key="confirm_bulk_delete_btn", type="primary",
-                                   on_click=_do_bulk_delete, args=(selected_words,))
-                    with cc2:
-                        st.button("Cancel", key="cancel_bulk_delete_btn", on_click=_cancel_bulk_confirm)
-
-            for w in page_words:
-                avg = f"{w['avg_accuracy']:.0f}%" if w["avg_accuracy"] is not None else "not quizzed yet"
-                row_check, row_expander = st.columns([1, 11])
-                with row_check:
-                    st.checkbox("Select", key=f"sel_{w['word']}", label_visibility="collapsed")
-                with row_expander:
-                    with st.expander(f"{w['word']}  —  {avg}"):
-                        speaker.play_button(w["word"], w.get("audio_url", ""))
-                        st.markdown(f"**Definition:** {w['definition']}")
-                        meta_bits = [b for b in (w["part_of_speech"], w["phonetic"]) if b]
-                        if meta_bits:
-                            st.caption("  •  ".join(meta_bits))
-                        if w["example"]:
-                            st.markdown(f"*Example: {w['example']}*")
-                        if w["synonyms"]:
-                            st.caption(f"Synonyms: {w['synonyms']}")
-                        st.caption(f"Quizzed {w['times_quizzed']} time(s)"
-                                   + (f", last on {w['last_quizzed']:%b %d, %Y}" if w["last_quizzed"] else ""))
-                        if w["next_review_date"]:
-                            st.caption(f"Next review: {w['next_review_date']:%b %d, %Y}")
-                        if w["times_quizzed"] > 0:
-                            st.markdown("**Attempt history:**")
-                            for a in db.get_attempts(w["word"]):
-                                st.markdown(f"- {a['attempt_date']:%b %d}: {a['accuracy']}% — \"{a['your_answer']}\"")
-                        st.button("Delete", key=f"del_{w['word']}", on_click=_do_single_delete, args=(w["word"],))
-
-            _pagination_row("bottom")
+        # Sticky footer - fixed to the bottom of the viewport (CSS below)
+        # rather than a plain row, so Prev/page-info/Next stay reachable
+        # without scrolling back up through a full page of expanders.
+        with st.container(key="words_sticky_footer"):
+            _toolbar_row("footer", with_actions=False)
 
 # ------------------------------------------------------------
 # Progress
