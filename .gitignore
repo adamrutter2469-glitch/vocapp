@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+*.duckdb
+*.duckdb.wal
+.streamlit/secrets.toml
+streamlit_out.log
+streamlit_err.log

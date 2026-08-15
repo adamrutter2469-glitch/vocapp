@@ -1,0 +1,439 @@
+A personal vocabulary learning app with spaced repetition + AI-graded definitions + persistent word history.
+
+What I envision
+
+You'd open something like:
+
+Vocabulary Trainer
+
+[ Quiz Me ] [ Add Word ] [ My Words ] [ Progress ]
+
+Then the quiz experience might be:
+
+Word:
+
+Fastidious
+
+Type your definition:
+
+[ __________________________________________ ]
+
+Submit
+
+The app evaluates your answer and gives you something like:
+
+Your answer:
+"Someone who is extremely careful about details."
+
+Accuracy: 92%
+
+Dictionary definition:
+Very attentive to detail and accuracy.
+
+Why: Your definition captures the core meaning very well. You didn't explicitly mention cleanliness/orderliness, which is another common aspect of the word.
+
+Then:
+
+Example:
+
+"She was fastidious about keeping her financial records organized."
+
+And potentially an image associated with the concept.
+
+I'd break the app into 5 pieces
+1. Word database
+
+This is the foundation.
+
+Something like:
+
+Field	Example
+word	fastidious
+definition	Very attentive to detail...
+part_of_speech	adjective
+synonyms	meticulous, exacting
+example	She was fastidious...
+image_url	...
+date_added	2026-08-14
+times_quizzed	12
+avg_accuracy	87%
+last_quizzed	2026-08-13
+retention_score	0.82
+
+And then a separate table for every quiz attempt:
+
+word	date	your_answer	accuracy
+fastidious	Aug 10	Very careful...	91%
+fastidious	Aug 12	Someone who is picky...	73%
+fastidious	Aug 14	Extremely careful...	96%
+
+That second table is important because it lets you eventually answer things like:
+
+"How many times did I get fastidious right?"
+
+and
+
+"Which words am I struggling with?"
+
+2. The dictionary/content engine
+
+When you add a word:
+
+Add Word
+
+fastidious
+
+The app could automatically retrieve:
+
+Dictionary definition
+Part of speech
+Pronunciation
+Synonyms
+Example sentences
+Etymology, if you want it
+Image
+
+You shouldn't have to manually enter all of that.
+
+You could simply type:
+
+fastidious
+
+and hit Add.
+
+The app does the rest.
+
+3. The AI grading system
+
+This is probably the coolest part.
+
+You don't want to simply compare your response to a dictionary definition.
+
+For example:
+
+Target
+
+Fastidious = very attentive to detail and accuracy.
+
+You answer:
+
+"Someone who is extremely picky and careful about how things are done."
+
+A simple string comparison would say they're completely different.
+
+An LLM can recognize that your answer demonstrates understanding.
+
+I'd actually have the AI return several metrics:
+
+accuracy: 91
+core_meaning: 95
+completeness: 85
+
+But your interface could simply display:
+
+91% Correct
+
+And perhaps:
+
+What you got right
+
+Extremely careful
+Concerned with details
+
+What you missed
+
+Accuracy/precision is an important component
+
+This also gives you a much better measure of whether you've actually learned the word.
+
+4. Spaced repetition
+
+This is where I'd make your app significantly better than simply having a "quiz me" button.
+
+The app should learn which words you know.
+
+For example:
+
+Word	Accuracy	Last quiz	Next quiz
+fastidious	96%	Today	3 days
+quixotic	88%	Yesterday	2 days
+obdurate	61%	Today	Tomorrow
+perspicacious	42%	Today	Later today
+
+So when you click:
+
+Quiz Me
+
+the app doesn't randomly select a word.
+
+It calculates:
+
+Which word am I most likely to forget right now?
+
+and gives you that one.
+
+You'd essentially be building your own Anki-style vocabulary system, except with AI grading rather than multiple-choice/self-grading.
+
+5. Progress dashboard
+
+I'd definitely build this.
+
+Something like:
+
+Vocabulary Progress
+
+Total Words
+
+187
+
+Mastered
+
+74
+
+Learning
+
+83
+
+Needs Work
+
+30
+
+Average Definition Accuracy
+
+84.7%
+
+And a graph:
+
+100% |                         ●
+ 90% |                   ●  ●
+ 80% |             ●  ●
+ 70% |        ●  ●
+ 60% |   ●
+     +--------------------------
+       Aug 1       Aug 7    Aug 14
+
+Then:
+
+Words That Need Work
+Word	Avg. Accuracy
+obdurate	43%
+pellucid	51%
+truculent	57%
+sycophant	62%
+
+That would be extremely useful.
+
+The technology I'd use
+
+Given your previous work with Python, Parquet, DuckDB, R2, etc., I wouldn't overcomplicate this.
+
+I'd probably build:
+
+Front end
+
+Streamlit
+
+Backend
+
+Python
+
+Database
+
+DuckDB
+
+Storage
+
+Cloudflare R2 eventually, if you want cloud persistence/backups
+
+AI
+
+An LLM API for grading definitions
+
+Dictionary
+
+A dictionary API
+
+Images
+
+An image API/search service
+
+Why Streamlit?
+
+Because you could build the entire interface in Python.
+
+You don't need to learn:
+
+React
+JavaScript
+TypeScript
+Node
+CSS frameworks
+
+You could literally have something like:
+
+st.title("Vocabulary Trainer")
+
+
+word = get_next_word()
+
+
+st.header(word)
+
+
+answer = st.text_area("Define this word:")
+
+
+if st.button("Submit"):
+    result = grade_definition(word, answer)
+    st.write(result)
+
+And Streamlit turns that into a web interface.
+
+That's very achievable.
+
+And this connects nicely to what you've already been doing
+
+You already have the concept of a vocabulary list.
+
+So rather than starting from scratch, I'd essentially turn your existing vocabulary system into a real application.
+
+Your architecture could eventually look like:
+
+                 VOCABULARY APP
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+     Front End      Database        APIs
+    Streamlit       DuckDB       Dictionary
+        │              │           AI Grading
+        │              │           Images
+        │              │
+        └──────────────┼──────────────┘
+                       │
+                  Quiz History
+                       │
+                 Progress Engine
+                       │
+                Spaced Repetition
+One thing I'd do differently from a typical vocabulary app
+
+I'd store your actual definition attempts permanently.
+
+That's important.
+
+Imagine six months from now you look at:
+
+Quixotic
+
+Your history might say:
+
+Aug 14: 58%
+"Someone who has unrealistic ideas."
+
+Aug 21: 76%
+"Someone who pursues an idealistic goal despite it probably being unrealistic."
+
+Sep 4: 94%
+"Extremely idealistic and unrealistic, especially in pursuit of an impossible goal."
+
+That's a really satisfying way to see yourself actually learning the vocabulary.
+
+And you could eventually have:
+
+Retention
+
+Quixotic
+
+Initial accuracy: 58%
+
+Current accuracy: 94%
+
+Attempts: 7
+
+Retention: Strong
+
+I would build this in phases
+
+Don't try to build everything at once.
+
+Phase 1 — MVP
+
+Just get:
+
+Add word
+List words
+Quiz word
+Text box for definition
+AI grade
+Show correct definition
+Save quiz attempt
+
+That alone gives you a functional app.
+
+Phase 2
+
+Add:
+
+Dictionary API
+Examples
+Synonyms
+Parts of speech
+Quiz history
+Average accuracy
+Phase 3
+
+Add:
+
+Spaced repetition
+Mastery score
+Weak-word identification
+Progress charts
+Daily quiz
+Phase 4
+
+Make it pretty.
+
+Word cards
+Images
+Animations
+Better quiz interface
+Mobile-friendly design
+Dashboard
+And importantly: you could probably keep the infrastructure essentially free
+
+For a personal app, I wouldn't start by paying for a server.
+
+You could develop it locally first:
+
+your computer
+    │
+    ├── Python
+    ├── Streamlit
+    └── DuckDB
+
+Then once it's working, put the database/storage in the cloud and deploy the application.
+
+The potentially non-free component would be AI grading, because every submitted definition requires an API call. But we can design that to be extremely cheap, and potentially experiment with free/local models depending on how sophisticated you want the grading to be.
+
+One other idea I really like
+
+Instead of asking:
+
+Define "fastidious."
+
+occasionally reverse it:
+
+Which word means "extremely attentive to detail and accuracy"?
+
+Then you type:
+
+fastidious
+
+and it grades that too.
+
+And eventually:
+
+Fill in the blank:
+"He was so ______ about his work that he spent 30 minutes checking a single spreadsheet."
+
+This gives you recall + recognition + contextual usage, which is much better for retention than one quiz format.
