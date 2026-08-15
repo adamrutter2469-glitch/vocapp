@@ -183,6 +183,13 @@ st.markdown(
         flex: 0 0 auto !important;
         min-width: 0 !important;
     }}
+
+    /* Gap between the banner logo and the Quiz Me/Add Word/... tab bar
+       was 16px - halved to 8px. Only one stTabs in the app, so it's safe
+       to target directly rather than scope through a container key. */
+    [data-testid="stTabs"] {{
+        margin-top: -8px;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -196,9 +203,12 @@ if "quiz_schedule" not in st.session_state:
     st.session_state.quiz_schedule = None
 st.session_state.setdefault("quiz_form_version", 0)
 
-_banner_l, _banner_c, _banner_r = st.columns([1, 2, 1])
-with _banner_c:
-    st.image(str(IMAGES_DIR / "vocapp_with_text.png"), use_container_width=True)
+with st.container(key="banner_row"):
+    # Ratio 3:4:3 puts the image at 4/10 = 40% of the row width, vs.
+    # 1:2:1's 2/4 = 50% before - an exact 20% size reduction, still centered.
+    _banner_l, _banner_c, _banner_r = st.columns([3, 4, 3])
+    with _banner_c:
+        st.image(str(IMAGES_DIR / "vocapp_with_text.png"), use_container_width=True)
 
 tab_quiz, tab_add, tab_words, tab_progress = st.tabs(["Quiz Me", "Add Word", "My Words", "Progress"])
 
