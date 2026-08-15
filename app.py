@@ -9,15 +9,24 @@ random one), mastery/weak-word tracking, progress dashboard.
 Phase 4 (polish - images, animations, mobile layout) comes later.
 """
 
+from pathlib import Path
+
 import requests
 import pandas as pd
 import streamlit as st
+from PIL import Image
 import db
 import dictionary
 import grading
 import speaker
 
-st.set_page_config(page_title="vocapp", page_icon="📚", layout="centered")
+IMAGES_DIR = Path(__file__).parent / "images"
+
+st.set_page_config(
+    page_title="vocapp",
+    page_icon=Image.open(IMAGES_DIR / "vocapp_book_only.png"),
+    layout="centered",
+)
 
 if "quiz_word" not in st.session_state:
     st.session_state.quiz_word = None
@@ -27,7 +36,9 @@ if "quiz_schedule" not in st.session_state:
     st.session_state.quiz_schedule = None
 st.session_state.setdefault("quiz_form_version", 0)
 
-st.title("📚 vocapp")
+_banner_l, _banner_c, _banner_r = st.columns([1, 2, 1])
+with _banner_c:
+    st.image(str(IMAGES_DIR / "vocapp_with_text.png"), use_container_width=True)
 
 tab_quiz, tab_add, tab_words, tab_progress = st.tabs(["Quiz Me", "Add Word", "My Words", "Progress"])
 

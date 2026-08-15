@@ -56,7 +56,7 @@ def word_header(word: str, audio_url: str = "", height_px: int = 56):
         f"""
         <div style="display:flex; align-items:center; gap:10px;
                      font-family:'Source Sans Pro', sans-serif;">
-            <span style="font-size:2rem; font-weight:700; color:#31333F;">{word}</span>
+            <span style="font-size:2rem; font-weight:700; color:#001D56;">{word}</span>
             <button onclick='{js}' title="Play pronunciation" style="
                 font-size: 22px; background: transparent; border: none;
                 cursor: pointer; padding: 0; line-height: 1;

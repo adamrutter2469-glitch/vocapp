@@ -1,0 +1,9 @@
+# Color scheme pulled from images/vocapp_with_text.png (sampled directly from
+# the logo's pixels, not eyeballed): navy #001D56, primary blue #0270FE,
+# light blue #5BABFB accent.
+[theme]
+primaryColor = "#0270FE"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#EAF2FE"
+textColor = "#001D56"
+font = "sans serif"
