@@ -174,6 +174,15 @@ st.markdown(
     [data-testid="stMainBlockContainer"] {{
         padding-bottom: 4rem;
     }}
+
+    /* Quiz Me's Submit/No Clue pair - same shrink-wrap as elsewhere so
+       No Clue sits right next to Submit instead of far off to the right
+       of a wide proportional column. */
+    .st-key-quiz_submit_row [data-testid="stColumn"] {{
+        width: auto !important;
+        flex: 0 0 auto !important;
+        min-width: 0 !important;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -232,7 +241,20 @@ with tab_quiz:
                 "Your definition", key=f"answer_box_{st.session_state.quiz_form_version}",
                 height=100, placeholder="Type your definition...", label_visibility="collapsed",
             )
-            if st.button("Submit", type="primary"):
+            # Shrink-wrapped so the two buttons sit right next to each
+            # other instead of spread across a wide proportional column -
+            # same fix applied to My Words' toolbar (see CSS above).
+            with st.container(key="quiz_submit_row"):
+                c_submit, c_noclue = st.columns(2, gap="small")
+                with c_submit:
+                    submit_clicked = st.button("Submit", type="primary", key="submit_btn")
+                with c_noclue:
+                    no_clue_clicked = st.button(
+                        "No Clue", key="no_clue_btn",
+                        help="Log this as a 0% miss instead of typing something just to submit",
+                    )
+
+            if submit_clicked:
                 if not answer.strip():
                     st.warning("Type something first.")
                 else:
@@ -253,6 +275,26 @@ with tab_quiz:
                             st.rerun()
                         except RuntimeError as e:
                             st.error(str(e))
+
+            if no_clue_clicked:
+                # No AI grading call needed - there's nothing to grade, so
+                # this is a straight, automatic 0%/miss. "*silence*" (not
+                # blank or whatever leftover text sat in the box) is what
+                # gets logged as the answer, both here and in My Words'
+                # attempt history, so it reads clearly as "skipped" rather
+                # than a real, low-effort typed guess.
+                result = grading.GradeResult(
+                    accuracy=0, got_right=[], got_missed=[],
+                    note="No definition provided - marked as a miss.",
+                )
+                db.save_attempt(
+                    word_row["word"], "*silence*", result.accuracy,
+                    result.got_right, result.got_missed, result.note,
+                )
+                st.session_state.quiz_schedule = db.update_schedule(word_row["word"], result.accuracy)
+                st.session_state.quiz_result = result
+                st.session_state.last_answer = "*silence*"
+                st.rerun()
         else:
             r = st.session_state.quiz_result
             st.markdown(f"**Your answer:** {st.session_state.last_answer}")
