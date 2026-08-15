@@ -25,6 +25,7 @@ if "quiz_result" not in st.session_state:
     st.session_state.quiz_result = None
 if "quiz_schedule" not in st.session_state:
     st.session_state.quiz_schedule = None
+st.session_state.setdefault("quiz_form_version", 0)
 
 st.title("📚 vocapp")
 
@@ -50,12 +51,12 @@ with tab_quiz:
             if st.button("Quiz anyway (practice)"):
                 st.session_state.quiz_word = soonest
                 st.session_state.quiz_result = None
+                st.session_state["quiz_form_version"] += 1
                 st.rerun()
 
     if st.session_state.quiz_word:
         word_row = db.get_word(st.session_state.quiz_word)
-        header = word_row["word"]
-        st.header(header)
+        speaker.word_header(word_row["word"], word_row.get("audio_url", ""))
         caption_bits = []
         if word_row["part_of_speech"]:
             caption_bits.append(word_row["part_of_speech"])
@@ -63,10 +64,12 @@ with tab_quiz:
             caption_bits.append(word_row["phonetic"])
         if caption_bits:
             st.caption("  •  ".join(caption_bits))
-        speaker.play_button(word_row["word"], word_row.get("audio_url", ""))
 
         if st.session_state.quiz_result is None:
-            answer = st.text_area("Type your definition:", key="answer_box", height=100)
+            answer = st.text_area(
+                "Your definition", key=f"answer_box_{st.session_state.quiz_form_version}",
+                height=100, placeholder="Type your definition...", label_visibility="collapsed",
+            )
             if st.button("Submit", type="primary"):
                 if not answer.strip():
                     st.warning("Type something first.")
@@ -119,6 +122,7 @@ with tab_quiz:
                 st.session_state.quiz_word = None
                 st.session_state.quiz_result = None
                 st.session_state.quiz_schedule = None
+                st.session_state["quiz_form_version"] += 1
                 st.rerun()
 
 # ------------------------------------------------------------
@@ -189,6 +193,7 @@ def _do_add():
     st.session_state.quiz_word = None  # this word may now be the only one - force Quiz Me to re-pick
     st.session_state.quiz_result = None
     st.session_state.quiz_schedule = None
+    st.session_state["quiz_form_version"] += 1
     st.session_state["add_word_msg"] = ("success", f"Added **{word}**.")
 
 
