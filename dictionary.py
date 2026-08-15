@@ -69,7 +69,7 @@ def lookup_word(word: str) -> dict:
         "definition": first_def.get("definition", ""),
         "part_of_speech": first_meaning.get("partOfSpeech", ""),
         "example": first_def.get("example", ""),
-        "synonyms": deduped_synonyms[:8],  # cap - long tails are usually noise
+        "synonyms": deduped_synonyms[:3],  # cap - long tails are usually noise
         "phonetic": phonetic,
         "audio_url": audio_url,
     }
