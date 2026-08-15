@@ -16,8 +16,8 @@ MW's Collegiate Dictionary is editorially curated and lists the most
 current/common sense first - confirmed live for both of the words above
 before switching.
 
-Fields still land in editable inputs before saving - auto-lookup fills the
-form, it doesn't bypass it.
+Add Word is lookup-only (no manual definition entry) - see app.py's Add
+Word tab.
 """
 
 import os
@@ -100,9 +100,11 @@ def _clean(text: str) -> str:
     return _TOKEN_RE.sub("", text).strip()
 
 
-def _first_example(entry: dict) -> str:
-    """First verbal-illustration (usage example) sentence for the entry's
-    first sense, if MW included one - not every sense has one."""
+def _examples(entry: dict, limit: int = 2) -> list[str]:
+    """Verbal-illustration (usage example) sentences for the entry's first
+    sense that has any, up to `limit` - not every sense has more than one,
+    some have none. Stops at the first sense with hits so examples always
+    belong to the sense shortdef[0] actually shows (not a later sense)."""
     for def_block in entry.get("def", []):
         for sense_group in def_block.get("sseq", []):
             for sense in sense_group:
@@ -110,8 +112,8 @@ def _first_example(entry: dict) -> str:
                     continue
                 for token_kind, token_val in sense[1].get("dt", []):
                     if token_kind == "vis" and token_val:
-                        return _clean(token_val[0]["t"])
-    return ""
+                        return [_clean(v["t"]) for v in token_val[:limit]]
+    return []
 
 
 def _synonyms(word: str, part_of_speech: str, thesaurus_key: str) -> list[str]:
@@ -171,11 +173,17 @@ def lookup_word(word: str) -> dict:
     phonetic = f"/{prs_list[0]['mw']}/" if prs_list and prs_list[0].get("mw") else ""
     audio_filename = next((p["sound"]["audio"] for p in prs_list if p.get("sound", {}).get("audio")), "")
     audio_url = _audio_url(audio_filename) if audio_filename else ""
+    examples = _examples(entry)
 
     return {
         "definition": shortdefs[0],
         "part_of_speech": part_of_speech,
-        "example": _first_example(entry),
+        # Singular - what gets saved to the words table (schema has one
+        # example column; unchanged since before this rewrite).
+        "example": examples[0] if examples else "",
+        # Plural - every example we found (up to 2), for the richer Add
+        # Word preview card. Not persisted.
+        "examples": examples,
         "synonyms": _synonyms(word, part_of_speech, thesaurus_key),
         "phonetic": phonetic,
         "audio_url": audio_url,

@@ -139,91 +139,152 @@ with tab_quiz:
 # ------------------------------------------------------------
 # Add Word
 # ------------------------------------------------------------
-
+# Lookup-only: the user never types their own definition (dictionary
+# accuracy was the whole point of switching to Merriam-Webster - see
+# dictionary.py), so there's no manual-entry fallback here. The bottom
+# of the tab stays blank until a lookup - via the book button, or a
+# synonym chip - actually succeeds; addword_result holds that lookup's
+# data and is what "Add" saves.
 
 # Streamlit gotcha: popping a keyed widget's session_state entry does NOT
 # reliably reset that widget on the next run - the frontend can keep
 # showing the stale value. The bulletproof fix is to version the widget
-# keys themselves, so "clearing the form" means rendering brand-new
-# widgets with no prior state, not mutating existing ones.
+# key itself, so "clearing the form" means rendering a brand-new widget
+# with no prior state, not mutating an existing one.
 st.session_state.setdefault("form_version", 0)
+st.session_state.setdefault("addword_result", None)
+st.session_state.setdefault("addword_looked_up_word", "")
 
 
-def _keys():
-    v = st.session_state["form_version"]
-    return {
-        "word": f"add_word_{v}", "definition": f"definition_input_{v}",
-        "pos": f"pos_input_{v}", "example": f"example_input_{v}",
-        "synonyms": f"synonyms_input_{v}",
-    }
+def _word_key():
+    return f"add_word_{st.session_state['form_version']}"
 
 
-def _do_lookup():
-    k = _keys()
-    word = st.session_state.get(k["word"], "").strip()
-    if not word:
-        st.session_state["add_word_msg"] = ("warning", "Type a word first.")
-        return
+def _set_msg(kind, text):
+    st.session_state["add_word_msg"] = (kind, text)
+
+
+def _run_lookup(word):
+    """Shared by the book button and every synonym chip's book icon."""
     try:
         info = dictionary.lookup_word(word)
-        st.session_state[k["definition"]] = info["definition"]
-        st.session_state[k["pos"]] = info["part_of_speech"]
-        st.session_state[k["example"]] = info["example"]
-        st.session_state[k["synonyms"]] = ", ".join(info["synonyms"])
-        st.session_state["phonetic_lookup"] = info["phonetic"]
-        st.session_state["audio_url_lookup"] = info["audio_url"]
-        st.session_state["add_word_msg"] = (
-            "success", "Filled in from the dictionary - review and adjust, then hit Add.",
-        )
+        st.session_state["addword_result"] = info
+        st.session_state["addword_looked_up_word"] = word
+        st.session_state.pop("add_word_msg", None)  # the card itself is the confirmation
     except dictionary.LookupNotFound:
-        st.session_state["add_word_msg"] = (
-            "warning", f"No dictionary entry for '{word}' - fill in the definition yourself below.",
-        )
+        st.session_state["addword_result"] = None
+        st.session_state["addword_looked_up_word"] = ""
+        _set_msg("warning", f"No dictionary entry found for '{word}'.")
     except requests.RequestException:
-        st.session_state["add_word_msg"] = (
-            "error", "Dictionary lookup failed (network error) - fill in the definition yourself below.",
-        )
+        st.session_state["addword_result"] = None
+        st.session_state["addword_looked_up_word"] = ""
+        _set_msg("error", "Dictionary lookup failed (network error) - try again.")
 
 
-def _do_add():
-    k = _keys()
-    word = st.session_state.get(k["word"], "").strip()
-    definition = st.session_state.get(k["definition"], "").strip()
-    if not word or not definition:
-        st.session_state["add_word_msg"] = ("warning", "Word and definition are required.")
-        return
-    pos = st.session_state.get(k["pos"], "")
-    example = st.session_state.get(k["example"], "")
-    synonyms_list = [s.strip() for s in st.session_state.get(k["synonyms"], "").split(",") if s.strip()]
-    phonetic = st.session_state.get("phonetic_lookup", "")
-    audio_url = st.session_state.get("audio_url_lookup", "")
-    db.add_word(word, definition, pos, example, synonyms_list, phonetic, audio_url)
-    st.session_state.pop("phonetic_lookup", None)
-    st.session_state.pop("audio_url_lookup", None)
-    st.session_state["form_version"] += 1  # next render uses fresh, empty widget keys
+def _reset_form_after_add():
+    st.session_state["form_version"] += 1  # next render uses a fresh, empty Word field
+    st.session_state["addword_result"] = None
+    st.session_state["addword_looked_up_word"] = ""
     st.session_state.quiz_word = None  # this word may now be the only one - force Quiz Me to re-pick
     st.session_state.quiz_result = None
     st.session_state.quiz_schedule = None
     st.session_state["quiz_form_version"] += 1
-    st.session_state["add_word_msg"] = ("success", f"Added **{word}**.")
+
+
+def _save(word, info):
+    db.add_word(
+        word, info["definition"], info["part_of_speech"], info["example"],
+        info["synonyms"], info["phonetic"], info["audio_url"],
+    )
+    _reset_form_after_add()
+    _set_msg("success", f"Added **{word}**.")
+
+
+def _do_lookup():
+    word = st.session_state.get(_word_key(), "").strip()
+    if not word:
+        _set_msg("warning", "Type a word first.")
+        return
+    _run_lookup(word)
+
+
+def _do_add():
+    word = st.session_state.get(_word_key(), "").strip()
+    if not word:
+        _set_msg("warning", "Type a word first.")
+        return
+    # Reuse the cached lookup if it's for this exact word; otherwise (Add
+    # pressed without Look up, or the word field changed since) verify
+    # against the dictionary right here rather than saving unverified.
+    cached = st.session_state.get("addword_result")
+    if cached and st.session_state.get("addword_looked_up_word", "").lower() == word.lower():
+        _save(word, cached)
+        return
+    try:
+        info = dictionary.lookup_word(word)
+    except dictionary.LookupNotFound:
+        _set_msg("error", f"'{word}' isn't in the dictionary - check the spelling.")
+        return
+    except requests.RequestException:
+        _set_msg("error", "Dictionary lookup failed (network error) - try again.")
+        return
+    _save(word, info)
+
+
+def _do_lookup_synonym(syn):
+    st.session_state[_word_key()] = syn
+    _run_lookup(syn)
+
+
+def _do_add_synonym(syn):
+    try:
+        info = dictionary.lookup_word(syn)
+    except dictionary.LookupNotFound:
+        _set_msg("error", f"'{syn}' isn't in the dictionary.")
+        return
+    except requests.RequestException:
+        _set_msg("error", "Dictionary lookup failed (network error) - try again.")
+        return
+    _save(syn, info)
 
 
 with tab_add:
     st.subheader("Add a word")
-    k = _keys()
-    st.text_input("Word", key=k["word"], placeholder="e.g. fastidious")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.button("Look up", on_click=_do_lookup, help="Auto-fill from the dictionary")
-    with c2:
-        st.button("Add", type="primary", on_click=_do_add)
+    c_word, c_lookup, c_add = st.columns([6, 1, 1])
+    with c_word:
+        st.text_input(
+            "Word", key=_word_key(), placeholder="Type a word...", label_visibility="collapsed",
+        )
+    with c_lookup:
+        st.button("📖", on_click=_do_lookup, help="Look up in the dictionary")
+    with c_add:
+        st.button("➕", type="primary", on_click=_do_add, help="Add to My Words")
 
-    st.text_area("Definition", key=k["definition"], height=80)
-    st.text_input("Part of speech (optional)", key=k["pos"])
-    st.text_area("Example sentence (optional)", key=k["example"], height=60)
-    st.text_input("Synonyms, comma-separated (optional)", key=k["synonyms"])
-    if st.session_state.get("phonetic_lookup"):
-        st.caption(f"Pronunciation: {st.session_state['phonetic_lookup']}")
+    result = st.session_state.get("addword_result")
+    if result:
+        st.divider()
+        speaker.word_header(st.session_state["addword_looked_up_word"], result.get("audio_url", ""))
+        meta_bits = [b for b in (result["part_of_speech"], result["phonetic"]) if b]
+        if meta_bits:
+            st.caption("  •  ".join(meta_bits))
+        st.markdown(f"**{result['definition']}**")
+        for ex in result["examples"]:
+            st.markdown(f"- *{ex}*")
+
+        if result["synonyms"]:
+            st.caption("Synonyms")
+            syn_cols = st.columns([2, 1, 1] * len(result["synonyms"]))
+            for i, syn in enumerate(result["synonyms"]):
+                with syn_cols[i * 3]:
+                    st.button(syn, key=f"syn_word_{i}", on_click=_do_lookup_synonym, args=(syn,))
+                with syn_cols[i * 3 + 1]:
+                    st.button("📖", key=f"syn_book_{i}", on_click=_do_lookup_synonym, args=(syn,), help=f"Look up '{syn}'")
+                with syn_cols[i * 3 + 2]:
+                    st.button("➕", key=f"syn_plus_{i}", on_click=_do_add_synonym, args=(syn,), help=f"Add '{syn}'")
+
+    if "add_word_msg" in st.session_state:
+        kind, msg = st.session_state.pop("add_word_msg")
+        getattr(st, kind)(msg)
 
     if "add_word_msg" in st.session_state:
         kind, msg = st.session_state.pop("add_word_msg")
