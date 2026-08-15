@@ -98,6 +98,23 @@ st.markdown(
         display: none;
     }}
 
+    /* My Words toolbar row: shrink every column (outer 3 clusters, and
+       the inner filter+sort / select+clear pairs) to its actual content
+       width instead of stretching proportionally - same fix as the
+       synonym pills above, needed here for the same reason (dead space
+       after each left-aligned button was the real cause of "too spaced
+       out", not the gap setting). The outer row then gets
+       space-between so the 3 clusters spread to the row's edges instead
+       of bunching at the left. */
+    .st-key-words_toolbar_row [data-testid="stColumn"] {{
+        width: auto !important;
+        flex: 0 0 auto !important;
+        min-width: 0 !important;
+    }}
+    .st-key-words_toolbar_row > div > [data-testid="stHorizontalBlock"] {{
+        justify-content: space-between;
+    }}
+
     /* My Words filter/sort popovers - default width was ~320px, halved.
        Popovers render in a portal straight under <body> (not inside our
        normal block-container tree), so this can't be scoped via the
@@ -569,28 +586,38 @@ with tab_words:
                 with c_next:
                     st.button(">", key=f"words_next_{key_suffix}", on_click=_words_next_page, disabled=(page >= total_pages - 1), help="Next page")
 
-            c_filter, c_sort, c_selall, c_clearall, c_trash = st.columns([0.5, 0.5, 1.4, 1.3, 0.5], gap="small")
-            with c_filter:
-                with st.popover("🔽", help="Filter"):
-                    st.radio(
-                        "Filter by", FILTER_OPTIONS, key="words_filter",
-                        on_change=_reset_words_page, label_visibility="collapsed",
+            # Three tight clusters (filter+sort / select+clear / trash)
+            # spread across the row via CSS space-between, rather than 5
+            # flat proportional columns - that left big dead-space gaps
+            # after each button, since a column's width and its button's
+            # actual (much narrower) content width are two different things.
+            with st.container(key="words_toolbar_row"):
+                c_left, c_mid, c_right = st.columns([1, 1, 1])
+                with c_left:
+                    c_filter, c_sort = st.columns(2, gap="small")
+                    with c_filter:
+                        with st.popover("🔽", help="Filter"):
+                            st.radio(
+                                "Filter by", FILTER_OPTIONS, key="words_filter",
+                                on_change=_reset_words_page, label_visibility="collapsed",
+                            )
+                    with c_sort:
+                        with st.popover("⇅", help="Sort"):
+                            st.radio(
+                                "Sort by", SORT_OPTIONS, key="words_sort",
+                                on_change=_reset_words_page, label_visibility="collapsed",
+                            )
+                with c_mid:
+                    c_selall, c_clearall = st.columns(2, gap="small")
+                    with c_selall:
+                        st.button("Select All", key="select_all_btn", on_click=_select_all, args=(words,))
+                    with c_clearall:
+                        st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
+                with c_right:
+                    st.button(
+                        "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
+                        disabled=(len(selected_words) == 0), help="Delete selected",
                     )
-            with c_sort:
-                with st.popover("⇅", help="Sort"):
-                    st.radio(
-                        "Sort by", SORT_OPTIONS, key="words_sort",
-                        on_change=_reset_words_page, label_visibility="collapsed",
-                    )
-            with c_selall:
-                st.button("Select All", key="select_all_btn", on_click=_select_all, args=(words,))
-            with c_clearall:
-                st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
-            with c_trash:
-                st.button(
-                    "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
-                    disabled=(len(selected_words) == 0), help="Delete selected",
-                )
 
             if "bulk_delete_msg" in st.session_state:
                 st.success(st.session_state.pop("bulk_delete_msg"))
