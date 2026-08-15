@@ -98,9 +98,9 @@ st.markdown(
         display: none;
     }}
 
-    /* My Words pagination arrows - dropped the "Prev"/"Next" text down to
-       bare < > glyphs, bumped up so a single character still reads clearly. */
-    .st-key-words_prev_top button, .st-key-words_next_top button,
+    /* My Words sticky-footer pagination arrows - dropped the "Prev"/"Next"
+       text down to bare < > glyphs, bumped up so a single character still
+       reads clearly. */
     .st-key-words_prev_footer button, .st-key-words_next_footer button {{
         font-size: 1.2rem;
         font-weight: 700;
@@ -524,13 +524,9 @@ with tab_words:
         # icon's enabled state stay accurate regardless of what's in view.
         selected_words = [w["word"] for w in words if st.session_state.get(f"sel_{w['word']}", False)]
 
-        def _toolbar_row(key_suffix, with_actions):
-            """Prev/page-info/Next always; the select/sort/delete cluster
-            only in the top row (the sticky footer at the bottom is just
-            navigation - see the CSS below)."""
-            cols = st.columns([0.5, 3, 0.5, 1.4, 1.3, 0.5, 0.5], gap="small") if with_actions \
-                else st.columns([0.5, 3, 0.5], gap="small")
-            c_prev, c_info, c_next = cols[0], cols[1], cols[2]
+        def _nav_row(key_suffix):
+            """Prev/page-info/Next - used only by the sticky footer now."""
+            c_prev, c_info, c_next = st.columns([0.5, 3, 0.5], gap="small")
             with c_prev:
                 st.button("<", key=f"words_prev_{key_suffix}", on_click=_words_prev_page, disabled=(page == 0), help="Previous page")
             with c_info:
@@ -542,25 +538,23 @@ with tab_words:
                 )
             with c_next:
                 st.button(">", key=f"words_next_{key_suffix}", on_click=_words_next_page, disabled=(page >= total_pages - 1), help="Next page")
-            if with_actions:
-                c_selall, c_clearall, c_sort, c_trash = cols[3], cols[4], cols[5], cols[6]
-                with c_selall:
-                    st.button("Select All", key="select_all_btn", on_click=_select_all, args=(words,))
-                with c_clearall:
-                    st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
-                with c_sort:
-                    with st.popover("⇅", help="Sort"):
-                        st.radio(
-                            "Sort by", SORT_OPTIONS, key="words_sort",
-                            on_change=_reset_words_page, label_visibility="collapsed",
-                        )
-                with c_trash:
-                    st.button(
-                        "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
-                        disabled=(len(selected_words) == 0), help="Delete selected",
-                    )
 
-        _toolbar_row("top", with_actions=True)
+        c_selall, c_clearall, c_sort, c_trash = st.columns([1.4, 1.3, 0.5, 0.5], gap="small")
+        with c_selall:
+            st.button("Select All", key="select_all_btn", on_click=_select_all, args=(words,))
+        with c_clearall:
+            st.button("Clear All", key="clear_sel_btn", on_click=_clear_selection, args=(words,))
+        with c_sort:
+            with st.popover("⇅", help="Sort"):
+                st.radio(
+                    "Sort by", SORT_OPTIONS, key="words_sort",
+                    on_change=_reset_words_page, label_visibility="collapsed",
+                )
+        with c_trash:
+            st.button(
+                "🗑️", key="trash_btn", on_click=_start_bulk_confirm,
+                disabled=(len(selected_words) == 0), help="Delete selected",
+            )
 
         if "bulk_delete_msg" in st.session_state:
             st.success(st.session_state.pop("bulk_delete_msg"))
@@ -604,7 +598,7 @@ with tab_words:
         # rather than a plain row, so Prev/page-info/Next stay reachable
         # without scrolling back up through a full page of expanders.
         with st.container(key="words_sticky_footer"):
-            _toolbar_row("footer", with_actions=False)
+            _nav_row("footer")
 
 # ------------------------------------------------------------
 # Progress
