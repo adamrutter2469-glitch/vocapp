@@ -1,13 +1,16 @@
 """
-vocapp - Phase 1 + Phase 2
+vocapp - Phase 1 + Phase 2 + Phase 3
 Phase 1: add word -> quiz word (typed definition) -> AI grade -> show
 correct definition -> save attempt.
 Phase 2: dictionary auto-lookup on add (definition/part of speech/
 example/synonyms fill in automatically, still editable before saving).
-Phase 3 (spaced repetition, mastery scoring) comes later.
+Phase 3: spaced repetition (Quiz Me serves the most-overdue word, not a
+random one), mastery/weak-word tracking, progress dashboard.
+Phase 4 (polish - images, animations, mobile layout) comes later.
 """
 
 import requests
+import pandas as pd
 import streamlit as st
 import db
 import dictionary
@@ -19,22 +22,34 @@ if "quiz_word" not in st.session_state:
     st.session_state.quiz_word = None
 if "quiz_result" not in st.session_state:
     st.session_state.quiz_result = None
+if "quiz_schedule" not in st.session_state:
+    st.session_state.quiz_schedule = None
 
 st.title("📚 vocapp")
 
-tab_quiz, tab_add, tab_words = st.tabs(["Quiz Me", "Add Word", "My Words"])
+tab_quiz, tab_add, tab_words, tab_progress = st.tabs(["Quiz Me", "Add Word", "My Words", "Progress"])
 
 # ------------------------------------------------------------
 # Quiz Me
 # ------------------------------------------------------------
 with tab_quiz:
     if st.session_state.quiz_word is None:
-        w = db.random_word()
-        if w is None:
-            st.info("No words yet - add some in the **Add Word** tab first.")
-        else:
+        w = db.next_due_word()
+        if w is not None:
             st.session_state.quiz_word = w
             st.session_state.quiz_result = None
+
+    if st.session_state.quiz_word is None:
+        # Nothing due per the spaced-repetition schedule right now.
+        soonest, soonest_date = db.soonest_upcoming()
+        if soonest is None:
+            st.info("No words yet - add some in the **Add Word** tab first.")
+        else:
+            st.success(f"✅ All caught up! Next word due {soonest_date:%b %d, %Y}.")
+            if st.button("Quiz anyway (practice)"):
+                st.session_state.quiz_word = soonest
+                st.session_state.quiz_result = None
+                st.rerun()
 
     if st.session_state.quiz_word:
         word_row = db.get_word(st.session_state.quiz_word)
@@ -63,6 +78,9 @@ with tab_quiz:
                                 word_row["word"], answer, result.accuracy,
                                 result.got_right, result.got_missed, result.note,
                             )
+                            st.session_state.quiz_schedule = db.update_schedule(
+                                word_row["word"], result.accuracy
+                            )
                             st.session_state.quiz_result = result
                             st.session_state.last_answer = answer
                             st.rerun()
@@ -88,9 +106,17 @@ with tab_quiz:
                     st.markdown(f"- {item}")
             st.caption(r.note)
 
+            sched = st.session_state.quiz_schedule
+            if sched:
+                st.caption(
+                    f"📅 Next review: {sched['next_review_date']:%b %d, %Y} "
+                    f"(in {sched['interval_days']} day(s))"
+                )
+
             if st.button("Next word ->"):
                 st.session_state.quiz_word = None
                 st.session_state.quiz_result = None
+                st.session_state.quiz_schedule = None
                 st.rerun()
 
 # ------------------------------------------------------------
@@ -156,6 +182,8 @@ def _do_add():
     st.session_state.pop("phonetic_lookup", None)
     st.session_state["form_version"] += 1  # next render uses fresh, empty widget keys
     st.session_state.quiz_word = None  # this word may now be the only one - force Quiz Me to re-pick
+    st.session_state.quiz_result = None
+    st.session_state.quiz_schedule = None
     st.session_state["add_word_msg"] = ("success", f"Added **{word}**.")
 
 
@@ -202,6 +230,8 @@ with tab_words:
                     st.caption(f"Synonyms: {w['synonyms']}")
                 st.caption(f"Quizzed {w['times_quizzed']} time(s)"
                            + (f", last on {w['last_quizzed']:%b %d, %Y}" if w["last_quizzed"] else ""))
+                if w["next_review_date"]:
+                    st.caption(f"Next review: {w['next_review_date']:%b %d, %Y}")
                 if w["times_quizzed"] > 0:
                     st.markdown("**Attempt history:**")
                     for a in db.get_attempts(w["word"]):
@@ -209,3 +239,36 @@ with tab_words:
                 if st.button("Delete", key=f"del_{w['word']}"):
                     db.delete_word(w["word"])
                     st.rerun()
+
+# ------------------------------------------------------------
+# Progress
+# ------------------------------------------------------------
+with tab_progress:
+    stats = db.get_progress_stats()
+    if stats["total"] == 0:
+        st.info("No words yet.")
+    else:
+        st.subheader("Vocabulary Progress")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Words", stats["total"])
+        c2.metric("Mastered", stats["mastered"])
+        c3.metric("Learning", stats["learning"])
+        c4.metric("Needs Work", stats["needs_work"])
+        if stats["overall_avg"] is not None:
+            st.metric("Average Definition Accuracy", f"{stats['overall_avg']}%")
+
+        trend = db.get_daily_accuracy_trend()
+        if len(trend) >= 2:
+            st.subheader("Accuracy over time")
+            df = pd.DataFrame(trend, columns=["date", "avg_accuracy"]).set_index("date")
+            st.line_chart(df)
+        elif trend:
+            st.caption("Quiz on a few more days to see an accuracy trend here.")
+
+        weak = db.get_weak_words()
+        if weak:
+            # Ranked lowest-first, not the same <60% cutoff the "Needs Work"
+            # tile above uses - named to avoid implying they always agree.
+            st.subheader("Your weakest words")
+            for w in weak:
+                st.markdown(f"- **{w['word']}** — {w['avg_accuracy']}% avg ({w['times_quizzed']} attempt(s))")
