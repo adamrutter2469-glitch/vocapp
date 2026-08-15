@@ -124,6 +124,21 @@ st.markdown(
         border-top: 1px solid rgba(0, 29, 86, 0.15);
         box-shadow: 0 -2px 10px rgba(0, 29, 86, 0.08);
     }}
+    /* Center the </Prev  page-info  Next> cluster as a group in the
+       footer, instead of Prev/Next stretching to the footer's edges with
+       the page-info text sitting off-center between them. Shrink each
+       column to its own content width first (same trick as the synonym
+       pills in Add Word) so the row hugs its content and centering the
+       row centers the text, not just the row's own already-full width. */
+    .st-key-words_sticky_footer [data-testid="stHorizontalBlock"] {{
+        justify-content: center;
+        gap: 0.75rem;
+    }}
+    .st-key-words_sticky_footer [data-testid="stColumn"] {{
+        width: auto !important;
+        flex: 0 0 auto !important;
+        min-width: 0 !important;
+    }}
     /* Room at the bottom of the page so the fixed footer never covers the
        last couple of words in the list. Applies to every tab (Streamlit
        keeps all tab panels in one shared block container), but only My
