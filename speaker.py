@@ -47,13 +47,22 @@ def _pronounce_js(word: str, audio_url: str) -> str:
     )
 
 
-def word_header(word: str, audio_url: str = "", height_px: int = 56):
+def word_header(word: str, audio_url: str = "", height_px: int = 40):
     """Word rendered as a header-sized line with a speaker icon hugging
     it directly (flexbox, gap - not fixed-width columns), for the main
-    quiz display."""
+    quiz display.
+
+    height_px used to default to 56 - the iframe's own content (2rem
+    text + icon) only ever renders 37px tall (measured), so the extra
+    19px was dead space sitting below the word, inside the iframe,
+    invisible but still pushing whatever comes after it (the part-of-
+    speech/pronunciation caption in both Quiz Me and Add Word) further
+    down. 40px keeps a few px of headroom rather than clipping right at
+    the content's exact height."""
     js = _pronounce_js(word, audio_url)
     components.html(
         f"""
+        <style>body {{ margin: 0; padding: 0; }}</style>
         <div style="display:flex; align-items:center; gap:10px;
                      font-family:'Source Sans Pro', sans-serif;">
             <span style="font-size:2rem; font-weight:700; color:#001D56;">{word}</span>

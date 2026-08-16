@@ -1,12 +1,25 @@
 """
-One-off: re-run every existing word through the new Merriam-Webster-backed
-dictionary.lookup_word() and overwrite its definition/part_of_speech/
-example/synonyms/phonetic/audio_url. Needed because the old free API
-(api.dictionaryapi.dev, Wiktionary-backed) picked senses in Wiktionary's
-historical order rather than by commonness - e.g. "sanguine" was saved as
-the archaic noun sense ("blood colour; red") instead of the everyday
-adjective sense ("optimistic, confident"). See dictionary.py's module
-docstring for the full story.
+Re-run every existing word through the current dictionary.lookup_word()
+and overwrite its definition/part_of_speech/example/synonyms/antonyms/
+etymology/phonetic/audio_url with whatever it returns today. General-
+purpose refresher, re-run whenever dictionary.py's lookup logic changes
+in a way that should retroactively apply to already-saved words - two
+concrete cases so far:
+  - The original switch from the old free API (api.dictionaryapi.dev,
+    Wiktionary-backed) to Merriam-Webster: that API picked senses in
+    Wiktionary's historical order rather than by commonness - e.g.
+    "sanguine" was saved as the archaic noun sense ("blood colour; red")
+    instead of the everyday adjective sense ("optimistic, confident").
+  - Adding multi-sense merging (_sense_groups), antonyms, and etymology
+    to lookup_word(): words saved before that change only ever got
+    shortdef[0], no antonyms, no etymology - re-running this backfills
+    all three without anyone needing to re-add every word by hand. This
+    also fixes a real grading-fairness bug it caused: quiz grading only
+    ever sees whatever's stored, so a word saved with just one sense
+    could get graded against an incomplete definition (confirmed for
+    "conflagration" - graded solely against its "fire" sense with no
+    idea a "war, conflict" sense also existed, until refreshed).
+See dictionary.py's module docstring for more on the MW switch.
 
 Uses db.add_word's upsert, which preserves the spaced-repetition schedule
 fields (repetition/ease_factor/interval_days/next_review_date/date_added)
@@ -34,6 +47,7 @@ for word in words:
         db.add_word(
             word, info["definition"], info["part_of_speech"], info["example"],
             info["synonyms"], info["phonetic"], info["audio_url"],
+            info["antonyms"], info["etymology"],
         )
         if old["definition"] != info["definition"] or old["part_of_speech"] != info["part_of_speech"]:
             changed.append(word)

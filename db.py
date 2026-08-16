@@ -60,6 +60,11 @@ def _ensure_schema(con):
     # against a database created under the Phase 1 schema.
     con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS synonyms TEXT")
     con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS phonetic TEXT")
+    # Added for the Thesaurus/Advanced sub-tabs - antonyms alongside the
+    # existing synonyms column, and etymology (blank for words saved
+    # before this migration; only backfilled on a re-add/lookup).
+    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS antonyms TEXT")
+    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS etymology TEXT")
     # Real native-speaker pronunciation clip URL, when the dictionary API
     # has one for this word - empty string means fall back to browser TTS.
     con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS audio_url TEXT")
@@ -87,7 +92,8 @@ def _ensure_schema(con):
 
 
 def add_word(word: str, definition: str, part_of_speech: str = "", example: str = "",
-             synonyms: list[str] | None = None, phonetic: str = "", audio_url: str = ""):
+             synonyms: list[str] | None = None, phonetic: str = "", audio_url: str = "",
+             antonyms: list[str] | None = None, etymology: str = ""):
     """Upsert - re-adding an existing word overwrites its definition, so
     corrections don't require deleting first. Spaced-repetition schedule
     fields are preserved across a correction (COALESCE from the existing
@@ -98,9 +104,10 @@ def add_word(word: str, definition: str, part_of_speech: str = "", example: str 
     con.execute(
         """
         INSERT OR REPLACE INTO words
-            (word, definition, part_of_speech, example, synonyms, phonetic, audio_url, date_added,
+            (word, definition, part_of_speech, example, synonyms, phonetic, audio_url,
+             antonyms, etymology, date_added,
              repetition, ease_factor, interval_days, next_review_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
                 COALESCE((SELECT date_added FROM words WHERE word = ?), ?),
                 COALESCE((SELECT repetition FROM words WHERE word = ?), 0),
                 COALESCE((SELECT ease_factor FROM words WHERE word = ?), 2.5),
@@ -109,6 +116,7 @@ def add_word(word: str, definition: str, part_of_speech: str = "", example: str 
         """,
         [w, definition.strip(), part_of_speech.strip(), example.strip(),
          ", ".join(synonyms) if synonyms else "", phonetic.strip(), audio_url.strip(),
+         ", ".join(antonyms) if antonyms else "", etymology.strip(),
          w, datetime.now(timezone.utc), w, w, w, w],
     )
     con.close()
@@ -135,14 +143,16 @@ def get_all_words():
     rows = con.execute("""
         SELECT
             w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic,
-            w.audio_url, w.date_added, w.next_review_date, w.interval_days, w.repetition,
+            w.audio_url, w.antonyms, w.etymology, w.date_added, w.next_review_date,
+            w.interval_days, w.repetition,
             COUNT(a.id)                    AS times_quizzed,
             ROUND(AVG(a.accuracy), 1)      AS avg_accuracy,
             MAX(a.attempt_date)            AS last_quizzed
         FROM words w
         LEFT JOIN quiz_attempts a ON a.word = w.word
         GROUP BY w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic,
-                 w.audio_url, w.date_added, w.next_review_date, w.interval_days, w.repetition
+                 w.audio_url, w.antonyms, w.etymology, w.date_added, w.next_review_date,
+                 w.interval_days, w.repetition
         ORDER BY w.date_added DESC
     """).fetchall()
     cols = [d[0] for d in con.description]
@@ -153,7 +163,9 @@ def get_all_words():
 def get_word(word: str):
     con = get_connection()
     row = con.execute(
-        "SELECT word, definition, part_of_speech, example, synonyms, phonetic, audio_url FROM words WHERE word = ?",
+        """SELECT word, definition, part_of_speech, example, synonyms, phonetic, audio_url,
+                  antonyms, etymology
+           FROM words WHERE word = ?""",
         [word],
     ).fetchone()
     con.close()
@@ -162,6 +174,7 @@ def get_word(word: str):
     return {
         "word": row[0], "definition": row[1], "part_of_speech": row[2],
         "example": row[3], "synonyms": row[4], "phonetic": row[5], "audio_url": row[6],
+        "antonyms": row[7], "etymology": row[8],
     }
 
 
@@ -180,12 +193,30 @@ def random_word():
 def next_due_word():
     """The most-overdue word per the spaced-repetition schedule - "which
     word am I most likely to forget right now," per the project plan.
-    Returns None if nothing is due today."""
+    Returns None if nothing is due today.
+
+    Among due words, one already quizzed today sorts behind every due
+    word that hasn't been - the SM-2 schedule alone doesn't always push
+    a word past "due today" (a missed word gets interval_days=1, i.e.
+    due again TOMORROW, not later today, so this isn't covering for a
+    scheduling bug; it's for decks with only a couple of words due at
+    once, where without this a just-answered word could otherwise be
+    the only - or the soonest - thing left to show, landing it right
+    back in front of you). If every due word has already been seen
+    today, falls back to whichever was seen longest ago today, so a
+    second pass still spreads out rather than looping the same word."""
     con = get_connection()
     row = con.execute("""
-        SELECT word FROM words
-        WHERE next_review_date <= CURRENT_DATE
-        ORDER BY next_review_date ASC, date_added ASC
+        SELECT w.word FROM words w
+        LEFT JOIN (
+            SELECT word, MAX(attempt_date) AS last_today
+            FROM quiz_attempts
+            WHERE CAST(attempt_date AS DATE) = CURRENT_DATE
+            GROUP BY word
+        ) today ON today.word = w.word
+        WHERE w.next_review_date <= CURRENT_DATE
+        ORDER BY (today.word IS NOT NULL) ASC, today.last_today ASC,
+                 w.next_review_date ASC, w.date_added ASC
         LIMIT 1
     """).fetchone()
     con.close()
@@ -196,11 +227,25 @@ def soonest_upcoming():
     """(word, next_review_date) for whichever word comes due soonest,
     regardless of whether it's due yet - used for the "all caught up,
     quiz ahead of schedule anyway" fallback. Returns (None, None) if
-    the deck is empty."""
+    the deck is empty.
+
+    Same "already quizzed today sorts last" rule as next_due_word() -
+    without it, practice mode on a small deck could hand back the word
+    you just answered, since a just-missed word's 1-day reschedule can
+    easily be the earliest next_review_date in the whole deck."""
     con = get_connection()
-    row = con.execute(
-        "SELECT word, next_review_date FROM words ORDER BY next_review_date ASC LIMIT 1"
-    ).fetchone()
+    row = con.execute("""
+        SELECT w.word, w.next_review_date FROM words w
+        LEFT JOIN (
+            SELECT word, MAX(attempt_date) AS last_today
+            FROM quiz_attempts
+            WHERE CAST(attempt_date AS DATE) = CURRENT_DATE
+            GROUP BY word
+        ) today ON today.word = w.word
+        ORDER BY (today.word IS NOT NULL) ASC, today.last_today ASC,
+                 w.next_review_date ASC
+        LIMIT 1
+    """).fetchone()
     con.close()
     return (row[0], row[1]) if row else (None, None)
 
@@ -295,21 +340,6 @@ def get_progress_stats():
     }
 
 
-def get_weak_words(limit: int = 10):
-    """Words with the lowest average accuracy, among words quizzed at
-    least once - "Which words am I struggling with?" per the plan."""
-    con = get_connection()
-    rows = con.execute("""
-        SELECT w.word, ROUND(AVG(a.accuracy), 1) AS avg_accuracy, COUNT(a.id) AS n
-        FROM words w JOIN quiz_attempts a ON a.word = w.word
-        GROUP BY w.word
-        ORDER BY avg_accuracy ASC
-        LIMIT ?
-    """, [limit]).fetchall()
-    con.close()
-    return [{"word": r[0], "avg_accuracy": r[1], "times_quizzed": r[2]} for r in rows]
-
-
 def get_daily_accuracy_trend():
     """(date, avg_accuracy) per day across every attempt - the
     progress-over-time chart."""
@@ -324,16 +354,67 @@ def get_daily_accuracy_trend():
     return rows
 
 
-def save_attempt(word: str, your_answer: str, accuracy: int,
-                  got_right: list[str], got_missed: list[str], note: str):
+def get_daily_words_quizzed_trend():
+    """(date, total_attempts) per day - how much quizzing happened each
+    day. Counts every attempt, not distinct words - quizzing the same
+    word twice in one day (a miss seen again, a "No Clue" retry) counts
+    twice, matching "how much quizzing did I do today" rather than "how
+    many different words did I touch.\""""
+    con = get_connection()
+    rows = con.execute("""
+        SELECT CAST(attempt_date AS DATE) AS day, COUNT(*) AS total_attempts
+        FROM quiz_attempts
+        GROUP BY day
+        ORDER BY day
+    """).fetchall()
+    con.close()
+    return rows
+
+
+def get_quiz_streak(threshold: int = 10):
+    """Current streak of consecutive days with at least `threshold`
+    words quizzed, walking backward from today.
+
+    Today doesn't break the streak just for being incomplete - it's
+    still in progress, so if today hasn't hit the threshold yet, the
+    walk starts from yesterday instead. From there, every day has to
+    both clear the threshold AND be an unbroken run of calendar days
+    (a day with zero attempts has no row at all, so a gap in the dict
+    lookup - defaulting to 0 - ends the streak the same as a too-low
+    count would)."""
+    con = get_connection()
+    rows = con.execute("""
+        SELECT CAST(attempt_date AS DATE) AS day, COUNT(*) AS n
+        FROM quiz_attempts
+        GROUP BY day
+    """).fetchall()
+    con.close()
+    if not rows:
+        return 0
+    counts = {day: n for day, n in rows}
+    today = datetime.now(timezone.utc).date()
+    day = today if counts.get(today, 0) >= threshold else today - timedelta(days=1)
+    streak = 0
+    while counts.get(day, 0) >= threshold:
+        streak += 1
+        day -= timedelta(days=1)
+    return streak
+
+
+def save_attempt(word: str, your_answer: str, accuracy: int, feedback: str):
+    """got_right/got_missed (separate bullet lists) are superseded by a
+    single feedback string with inline <right>/<wrong> tags (see
+    grading.GradeResult) - the columns stay (older rows still have real
+    data in them) but new attempts just write "" to both and put the
+    whole tagged feedback in note, rather than a schema migration to
+    drop two now-unused columns."""
     con = get_connection()
     con.execute(
         """
         INSERT INTO quiz_attempts (word, attempt_date, your_answer, accuracy, got_right, got_missed, note)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        [word, datetime.now(timezone.utc), your_answer, accuracy,
-         "\n".join(got_right), "\n".join(got_missed), note],
+        [word, datetime.now(timezone.utc), your_answer, accuracy, "", "", feedback],
     )
     con.close()
 

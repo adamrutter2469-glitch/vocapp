@@ -30,14 +30,33 @@ def _get_client():
 
 class GradeResult(BaseModel):
     accuracy: int = Field(description="0-100 score for how well the user's definition captures the word's meaning")
-    got_right: list[str] = Field(description="Short phrases (2-6 words each) naming what the user's definition got right. Empty list if nothing.")
-    got_missed: list[str] = Field(description="Short phrases naming important aspects of the meaning the user's definition missed or got wrong. Empty list if nothing missed.")
-    note: str = Field(description="One short sentence of overall feedback, direct and specific, not generic praise.")
+    feedback: str = Field(description=(
+        "1-2 sentences of direct, specific feedback, written as flowing prose spoken "
+        "to the user - not a list, not generic praise. Wrap the exact phrase(s) naming "
+        "what they got right in <right>...</right> tags, and the exact phrase(s) naming "
+        "what they missed or got wrong in <wrong>...</wrong> tags, e.g.: 'You captured "
+        "the <right>sense of things being separate and distant</right> but missed that "
+        "disparate specifically means <wrong>they differ in quality, character, or "
+        "nature - not just physical location</wrong>.' Each tagged phrase must name real "
+        "content (the actual concept), never a vague stand-in like 'accuracy' or 'the "
+        "definition'. Omit <right>...</right> entirely if nothing was right; omit "
+        "<wrong>...</wrong> entirely if nothing was missed."
+    ))
 
 
 GRADING_SYSTEM_PROMPT = """You are grading a vocabulary quiz. The user was shown a word and typed their own \
 definition from memory. Compare their definition to the reference definition and judge whether they \
 demonstrate real understanding of the word's meaning - not whether their wording matches.
+
+The reference definition sometimes lists more than one numbered sense of the word (a word can have 2-3 \
+distinct meanings). When it does, grade in two explicit steps:
+  1. Identify which single listed sense the user's answer is actually describing (by content, not by \
+which one happens to be numbered first - the numbering is MW's most-common-usage ordering, not a ranking \
+of which sense the user was supposed to answer).
+  2. Grade ONLY against that one sense, as if the other listed senses did not exist. A full, accurate \
+description of that one sense is a complete answer worth 90-100, in full - not "missing" anything, even \
+though other senses exist. Never tag a *different* sense's content as <wrong>...</wrong>; only tag \
+something as missed if it belongs to the same sense the user was already describing.
 
 Score generously for paraphrase, synonyms, and partial credit for capturing the core sense even if a \
 secondary nuance is missing. Score low only when the user's definition would mislead someone about what \
@@ -49,14 +68,27 @@ Grading axis reference:
 - 40-69: partially right - gets in the right neighborhood but misses something important
 - 0-39: wrong, off-topic, or too vague to demonstrate understanding
 
-Be specific in got_right/got_missed - name the actual concepts, not "accuracy" or "completeness" as abstractions."""
+Be specific in the tagged phrases inside feedback - name the actual concepts the user got right or missed, \
+never "accuracy" or "completeness" as abstractions."""
+
+
+def _format_reference(definition: str) -> str:
+    """reference_definition may hold up to 3 senses joined by "\n" (see
+    dictionary.py's lookup_word) - numbered here so the prompt reads
+    unambiguously as several distinct senses rather than one run-on
+    definition. A plain single-sense definition (the common case) passes
+    through unchanged."""
+    senses = definition.split("\n")
+    if len(senses) == 1:
+        return senses[0]
+    return "\n".join(f"{i}. {s}" for i, s in enumerate(senses, 1))
 
 
 def grade_definition(word: str, reference_definition: str, user_answer: str) -> GradeResult:
     client = _get_client()
     user_msg = (
         f"Word: {word}\n"
-        f"Reference definition: {reference_definition}\n"
+        f"Reference definition: {_format_reference(reference_definition)}\n"
         f"User's typed definition: {user_answer}"
     )
     response = client.messages.parse(
