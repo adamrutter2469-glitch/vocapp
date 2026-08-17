@@ -18,6 +18,8 @@ import duckdb
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+import r2_storage
+
 DB_PATH = Path(__file__).parent / "vocab.duckdb"
 
 # vocab.duckdb lives inside OneDrive's synced Documents folder, so every
@@ -34,6 +36,12 @@ _CONNECT_RETRY_DELAY_SECONDS = 0.2
 
 
 def get_connection():
+    # No-op after the first call in this process (see r2_storage's own
+    # docstring) - pulling the R2 copy down before opening a connection
+    # is what makes a freshly-started process (a Streamlit Cloud
+    # container coming up after a redeploy, in particular) see the real
+    # data instead of an empty local file.
+    r2_storage.download_db()
     for attempt in range(_CONNECT_RETRIES):
         try:
             con = duckdb.connect(str(DB_PATH))
@@ -120,6 +128,7 @@ def add_word(word: str, definition: str, part_of_speech: str = "", example: str 
          w, datetime.now(timezone.utc), w, w, w, w],
     )
     con.close()
+    r2_storage.upload_db()
 
 
 def set_audio_url(word: str, audio_url: str):
@@ -128,6 +137,7 @@ def set_audio_url(word: str, audio_url: str):
     con = get_connection()
     con.execute("UPDATE words SET audio_url = ? WHERE word = ?", [audio_url.strip(), word])
     con.close()
+    r2_storage.upload_db()
 
 
 def delete_word(word: str):
@@ -135,6 +145,7 @@ def delete_word(word: str):
     con.execute("DELETE FROM quiz_attempts WHERE word = ?", [word])
     con.execute("DELETE FROM words WHERE word = ?", [word])
     con.close()
+    r2_storage.upload_db()
 
 
 def get_all_words():
@@ -304,6 +315,7 @@ def update_schedule(word: str, accuracy: int):
         [repetition, ease_factor, interval_days, next_review_date, word],
     )
     con.close()
+    r2_storage.upload_db()
     return {"repetition": repetition, "interval_days": interval_days, "next_review_date": next_review_date}
 
 
@@ -417,6 +429,7 @@ def save_attempt(word: str, your_answer: str, accuracy: int, feedback: str):
         [word, datetime.now(timezone.utc), your_answer, accuracy, "", "", feedback],
     )
     con.close()
+    r2_storage.upload_db()
 
 
 def get_attempts(word: str):
