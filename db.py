@@ -145,28 +145,44 @@ def add_word(word: str, definition: str, part_of_speech: str = "", example: str 
              antonyms: list[str] | None = None, etymology: str = ""):
     """Upsert - re-adding an existing word overwrites its definition, so
     corrections don't require deleting first. Spaced-repetition schedule
-    fields are preserved across a correction (COALESCE from the existing
-    row), same as date_added - editing a definition shouldn't reset
-    progress on that word."""
+    fields are preserved across a correction: date_added/repetition/
+    ease_factor/interval_days/next_review_date are only ever set by the
+    VALUES clause below (used the one time a row doesn't exist yet);
+    ON CONFLICT's SET list doesn't mention them at all, so an existing
+    row's own values for those columns are left exactly as they were.
+
+    Was INSERT OR REPLACE with the same "keep the old schedule" logic
+    done via a COALESCE((SELECT ... WHERE word = ?), fallback) subquery
+    per field, evaluated as part of the very INSERT it was guarding -
+    hit a genuine "Duplicate key ... violates primary key constraint"
+    in production (a self-referential subquery mid-INSERT is exactly
+    the kind of thing that can race against itself). DuckDB's own
+    documented upsert idiom - ON CONFLICT DO UPDATE, reading the row
+    actually being inserted via EXCLUDED - both reads cleaner and
+    doesn't share that failure mode."""
     con = get_connection()
     w = word.strip()
     con.execute(
         """
-        INSERT OR REPLACE INTO words
+        INSERT INTO words
             (word, definition, part_of_speech, example, synonyms, phonetic, audio_url,
              antonyms, etymology, date_added,
              repetition, ease_factor, interval_days, next_review_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                COALESCE((SELECT date_added FROM words WHERE word = ?), ?),
-                COALESCE((SELECT repetition FROM words WHERE word = ?), 0),
-                COALESCE((SELECT ease_factor FROM words WHERE word = ?), 2.5),
-                COALESCE((SELECT interval_days FROM words WHERE word = ?), 0),
-                COALESCE((SELECT next_review_date FROM words WHERE word = ?), ?))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 2.5, 0, ?)
+        ON CONFLICT (word) DO UPDATE SET
+            definition = EXCLUDED.definition,
+            part_of_speech = EXCLUDED.part_of_speech,
+            example = EXCLUDED.example,
+            synonyms = EXCLUDED.synonyms,
+            phonetic = EXCLUDED.phonetic,
+            audio_url = EXCLUDED.audio_url,
+            antonyms = EXCLUDED.antonyms,
+            etymology = EXCLUDED.etymology
         """,
         [w, definition.strip(), part_of_speech.strip(), example.strip(),
          ", ".join(synonyms) if synonyms else "", phonetic.strip(), audio_url.strip(),
          ", ".join(antonyms) if antonyms else "", etymology.strip(),
-         w, datetime.now(timezone.utc), w, w, w, w, _today_local()],
+         datetime.now(timezone.utc), _today_local()],
     )
     con.close()
     r2_storage.upload_db()
