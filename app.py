@@ -722,10 +722,19 @@ def _run_lookup(word):
         _set_msg("error", "Dictionary lookup failed (network error) - try again.")
 
 
-def _reset_form_after_add():
-    st.session_state["form_version"] += 1  # next render uses a fresh, empty Word field
-    st.session_state["addword_result"] = None
-    st.session_state["addword_looked_up_word"] = ""
+def _reset_form_after_add(clear_search=True):
+    # clear_search is False when the add came from a clickable-word
+    # popover (a synonym, an antonym, a word inside the definition)
+    # rather than the main Word field/Add Word button - that word is
+    # usually NOT the one currently searched/displayed, so wiping the
+    # search box and the looked-up result out from under whatever the
+    # user was actually looking at (e.g. "circumspect"'s Definition tab,
+    # just because they quick-added one of its synonyms) is exactly the
+    # "my search disappeared" bug this guards against.
+    if clear_search:
+        st.session_state["form_version"] += 1  # next render uses a fresh, empty Word field
+        st.session_state["addword_result"] = None
+        st.session_state["addword_looked_up_word"] = ""
     # Only force Quiz Me to re-pick if it doesn't already have a word in
     # play - the deck being empty, or "all caught up" with nothing due,
     # are the cases this word could actually change. If a quiz is
@@ -740,7 +749,7 @@ def _reset_form_after_add():
         st.session_state["quiz_form_version"] += 1
 
 
-def _save(word, info):
+def _save(word, info, clear_search=True):
     # db.add_word() is an upsert (see its docstring) - re-adding an
     # existing word refreshes its definition rather than erroring or
     # duplicating, which is useful for corrections. But that also means
@@ -753,7 +762,7 @@ def _save(word, info):
         info["synonyms"], info["phonetic"], info["audio_url"],
         info["antonyms"], info["etymology"],
     )
-    _reset_form_after_add()
+    _reset_form_after_add(clear_search=clear_search)
     if already_had_it:
         _set_msg("warning", f"**{word}** is already in your list.")
     else:
@@ -801,7 +810,11 @@ def _do_lookup_word(word):
 
 def _do_add_word(word):
     """Shared by every clickable word rendered via _render_clickable_text
-    - definitions, synonyms, antonyms alike."""
+    - definitions, synonyms, antonyms alike. clear_search=False - this
+    word is a related word (a synonym, antonym, a word inside a
+    definition), not necessarily the one currently searched/displayed,
+    so adding it shouldn't clear the Word field or the lookup result
+    still on screen (see _reset_form_after_add)."""
     st.session_state["popover_version"] += 1  # see the setdefault's comment above
     try:
         info = dictionary.lookup_word(word)
@@ -811,7 +824,7 @@ def _do_add_word(word):
     except requests.RequestException:
         _set_msg("error", "Dictionary lookup failed (network error) - try again.")
         return
-    _save(word, info)
+    _save(word, info, clear_search=False)
 
 
 # Single-letter words ("a", "I") count as clickable too, same as every
