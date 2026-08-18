@@ -222,11 +222,19 @@ def _etymology(entry: dict) -> str:
 
 
 def lookup_word(word: str) -> dict:
-    """Returns {definition, part_of_speech, example, examples, synonyms,
-    antonyms, etymology, phonetic, audio_url}. Raises LookupNotFound if
-    MW has no entry for this word, or requests.RequestException on a
-    network/timeout failure - callers should catch both and fall back to
-    manual entry.
+    """Returns {word, definition, part_of_speech, example, examples,
+    synonyms, antonyms, etymology, phonetic, audio_url}. Raises
+    LookupNotFound if MW has no entry for this word, or
+    requests.RequestException on a network/timeout failure - callers
+    should catch both and fall back to manual entry.
+
+    `word` is MW's own spelling of the headword, not necessarily the
+    same string passed in - callers should save/display THIS, not the
+    input `word` param, so a word's stored capitalization always
+    matches the dictionary (lowercase for an ordinary word regardless
+    of what case the user typed/autocapitalize did, capitalized for an
+    actual proper-noun-derived word like "Orwellian") rather than
+    whatever the user happened to type.
 
     `definition` holds up to 3 of MW's top-level senses (see
     _sense_groups - a base sense and its lettered sub-senses count as
@@ -249,16 +257,28 @@ def lookup_word(word: str) -> dict:
         entry = entries[0]
         part_of_speech = entry.get("fl", "")
         prs_list = entry.get("hwi", {}).get("prs", [])
+        # MW's own spelling of the headword, capitalization included -
+        # meta.id is e.g. "bradycardia" or, for an actual proper-noun-
+        # derived word, "Orwellian". Trusting THIS instead of echoing
+        # back whatever case the user happened to type is what makes a
+        # lowercase word stay lowercase regardless of autocapitalize/
+        # typos, while a genuinely-capitalized word still comes out
+        # capitalized. ":N" homograph suffix (e.g. "bass:1") stripped -
+        # that's MW's own disambiguation marker, not part of the word.
+        canonical_word = entry.get("meta", {}).get("id", "").split(":")[0] or word.strip()
     else:
         runon_match = _find_runon(data, word)
         if not runon_match:
             raise LookupNotFound(f"No dictionary entry found for '{word}'.")
         # Run-on form: definition/example come from the base entry (a
-        # run-on has no definition of its own), but part of speech and
-        # pronunciation are the run-on's own where MW provides them.
+        # run-on has no definition of its own), but part of speech,
+        # pronunciation, AND spelling are the run-on's own where MW
+        # provides them - "ure" is the run-on's own headword text, "*"
+        # marking syllable breaks (e.g. "an*ach*ro*nis*tic").
         entry, runon = runon_match
         part_of_speech = runon.get("fl", "") or entry.get("fl", "")
         prs_list = runon.get("prs") or entry.get("hwi", {}).get("prs", [])
+        canonical_word = runon.get("ure", "").replace("*", "") or word.strip()
 
     senses = _sense_groups(entry)
     if not senses:
@@ -271,6 +291,7 @@ def lookup_word(word: str) -> dict:
     synonyms, antonyms = _synonyms_and_antonyms(word, part_of_speech, thesaurus_key)
 
     return {
+        "word": canonical_word,
         "definition": "\n".join(senses),
         "part_of_speech": part_of_speech,
         # Singular - what gets saved to the words table (schema has one

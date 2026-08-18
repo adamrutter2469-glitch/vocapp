@@ -704,7 +704,10 @@ def _run_lookup(word):
     try:
         info = dictionary.lookup_word(word)
         st.session_state["addword_result"] = info
-        st.session_state["addword_looked_up_word"] = word
+        # MW's own spelling/capitalization (see dictionary.lookup_word's
+        # docstring), not whatever case was typed/clicked - this is what
+        # ends up both displayed as the word header and saved via _save.
+        st.session_state["addword_looked_up_word"] = info["word"]
         # However the lookup was triggered - typing a fresh word into
         # the search box, or clicking a word inside Thesaurus/Advanced -
         # land back on Definition rather than leaving whatever sub-tab
@@ -787,7 +790,9 @@ def _do_add():
     # against the dictionary right here rather than saving unverified.
     cached = st.session_state.get("addword_result")
     if cached and st.session_state.get("addword_looked_up_word", "").lower() == word.lower():
-        _save(word, cached)
+        # cached["word"] (MW's own spelling), not the typed word - see
+        # dictionary.lookup_word's docstring.
+        _save(cached["word"], cached)
         return
     try:
         info = dictionary.lookup_word(word)
@@ -797,7 +802,7 @@ def _do_add():
     except requests.RequestException:
         _set_msg("error", "Dictionary lookup failed (network error) - try again.")
         return
-    _save(word, info)
+    _save(info["word"], info)
 
 
 def _do_lookup_word(word):
@@ -824,7 +829,7 @@ def _do_add_word(word):
     except requests.RequestException:
         _set_msg("error", "Dictionary lookup failed (network error) - try again.")
         return
-    _save(word, info, clear_search=False)
+    _save(info["word"], info, clear_search=False)
 
 
 # Single-letter words ("a", "I") count as clickable too, same as every
