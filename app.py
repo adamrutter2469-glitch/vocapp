@@ -24,6 +24,7 @@ import frequency
 import grading
 import speaker
 import trends
+import usage_examples
 
 IMAGES_DIR = Path(__file__).parent / "images"
 
@@ -1127,8 +1128,8 @@ with tab_add:
             # tab's code runs) - a genuine bonus here, since it means
             # Advanced's trend/etymology network call only fires while
             # Advanced is actually the open tab, not on every rerun.
-            tab_definition, tab_thesaurus, tab_advanced = st.tabs(
-                ["Definition", "Thesaurus", "Advanced"],
+            tab_definition, tab_thesaurus, tab_examples, tab_advanced = st.tabs(
+                ["Definition", "Thesaurus", "Examples", "Advanced"],
                 key="addword_subtab", on_change="rerun",
             )
 
@@ -1154,10 +1155,6 @@ with tab_add:
                     # senses shrink independently.
                     row_key = f"defword_{looked_up}_{i}" + ("_last" if i == len(def_senses) else "")
                     _render_clickable_text(s, key_prefix=row_key, prefix=sense_prefix)
-                if result["examples"]:
-                    st.caption("Usage")
-                    for ex in result["examples"]:
-                        st.markdown(f"- *{ex}*")
 
             with tab_thesaurus:
                 # Comma-separated and clickable, same word-popover
@@ -1187,6 +1184,22 @@ with tab_add:
                     )
                 else:
                     st.caption("No antonyms found for this word.")
+
+            with tab_examples:
+                # Live network call (freedictionaryapi.com), same lazy-tab
+                # pattern as Advanced's trend lookup below - only fires
+                # while this tab is actually open. MW's own examples
+                # (result["examples"], up to 2) are already in hand from
+                # the lookup that already ran; this just tops them up to
+                # 3 total, best-effort.
+                examples = usage_examples.combined_examples(
+                    looked_up, result["part_of_speech"], result["examples"],
+                )
+                if examples:
+                    for ex in examples:
+                        st.markdown(f"- *{ex}*")
+                else:
+                    st.caption("No usage examples available for this word.")
 
             with tab_advanced:
                 # Etymology leads the tab - it's the more stable, "read
