@@ -46,9 +46,12 @@ st.markdown(
     f"""
     <style>
     /* The gap above the Add Word result card (word/definition/synonyms)
-       was excessive - halved via a negative top margin on its wrapper. */
+       was excessive - cut down via a negative top margin on its wrapper.
+       -1.1rem had shrunk it all the way to ~0 (measured: -1.6px, i.e. the
+       search bar and word were essentially touching) - backed off to
+       -0.5rem for a real but modest ~8px gap instead. */
     .st-key-addword_result {{
-        margin-top: -1.1rem;
+        margin-top: -0.5rem;
     }}
 
     /* Clickable-word definition text (_render_clickable_text): each real
