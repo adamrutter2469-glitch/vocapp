@@ -16,13 +16,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import db
 
+OWNER = db._LEGACY_OWNER_EMAIL
+
 trimmed = 0
-for w in db.get_all_words():
+for w in db.get_all_words(OWNER):
     current = [s.strip() for s in (w["synonyms"] or "").split(",") if s.strip()]
     if len(current) <= 3:
         continue
     db.add_word(
-        w["word"], w["definition"], w["part_of_speech"], w["example"],
+        OWNER, w["word"], w["definition"], w["part_of_speech"], w["example"],
         current[:3], w["phonetic"], w.get("audio_url", ""),
     )
     trimmed += 1

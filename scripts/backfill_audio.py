@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import db
 import dictionary
 
-words = [w["word"] for w in db.get_all_words()]
+words = [w["word"] for w in db.get_all_words(db._LEGACY_OWNER_EMAIL)]
 found, missing = 0, 0
 for word in words:
     try:

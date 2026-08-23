@@ -38,14 +38,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import db
 import dictionary
 
-words = [w["word"] for w in db.get_all_words()]
+# word_content (dictionary data) is shared across users, so this only
+# needs to run once against any one user's list to refresh it for
+# everyone - your own account, since this is a maintenance script.
+OWNER = db._LEGACY_OWNER_EMAIL
+
+words = [w["word"] for w in db.get_all_words(OWNER)]
 changed, unchanged, failed = [], [], []
 for word in words:
     try:
-        old = db.get_word(word)
+        old = db.get_word(OWNER, word)
         info = dictionary.lookup_word(word)
         db.add_word(
-            word, info["definition"], info["part_of_speech"], info["example"],
+            OWNER, word, info["definition"], info["part_of_speech"], info["example"],
             info["synonyms"], info["phonetic"], info["audio_url"],
             info["antonyms"], info["etymology"],
         )

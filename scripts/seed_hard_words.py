@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import db
 import dictionary
 
+OWNER = db._LEGACY_OWNER_EMAIL
+
 WORDS = [
     "perspicacious", "mendacious", "obsequious", "perfunctory", "surreptitious",
     "vociferous", "taciturn", "ephemeral", "ubiquitous", "cacophony",
@@ -27,7 +29,7 @@ for word in WORDS:
     try:
         info = dictionary.lookup_word(word)
         db.add_word(
-            word, info["definition"], info["part_of_speech"], info["example"],
+            OWNER, word, info["definition"], info["part_of_speech"], info["example"],
             info["synonyms"], info["phonetic"],
         )
         ok.append(word)

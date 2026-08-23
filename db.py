@@ -1,18 +1,24 @@
 """
 DuckDB storage layer for vocapp.
 
-Schema, per the project plan:
-  words          - one row per vocab word. Phase 2 adds synonyms/phonetic,
-                    filled in by dictionary.py's auto-lookup - still
-                    editable/overridable by hand.
-  quiz_attempts  - one row per graded quiz attempt, so accuracy history
-                    persists permanently (the whole point, per the plan:
-                    "store your actual definition attempts permanently")
+Schema (multi-user, see _migrate_legacy_single_user_schema for how this
+came from the original single-user shape):
+  word_content   - one row per distinct word, SHARED across every user.
+                    Dictionary content (definition/synonyms/etymology/...)
+                    is the same regardless of who looked it up, so this
+                    is cached once - a friend adding a word you already
+                    have reuses this row instead of a second MW lookup.
+  user_words     - one row per (user, word): THIS user's own "my word
+                    list" membership plus their own SM-2 schedule state.
+                    Two different users studying the same word have two
+                    independent rows here, each on their own schedule.
+  quiz_attempts  - one row per graded quiz attempt, tagged with user_id -
+                    so accuracy history persists permanently per user.
 
-DB file lives at vocab.duckdb, next to this script - local-only storage,
-no server, matches the "develop locally first" plan.
+DB file lives at vocab.duckdb, next to this script.
 """
 
+import random
 import time
 import duckdb
 from pathlib import Path
@@ -31,9 +37,16 @@ DB_PATH = Path(__file__).parent / "vocab.duckdb"
 # counts were landing on a different day than the user expected. Every
 # TIMESTAMP column still stores real UTC instants (unambiguous, correct
 # storage practice) - only the "which day" logic below, done in Python
-# rather than SQL, converts to this zone. Single-user personal app, so
-# one hardcoded zone rather than a per-user setting.
+# rather than SQL, converts to this zone. Every user of this app is
+# assumed to be in this zone (a handful of friends, not a public app) -
+# a real per-user timezone setting would be the next thing to add if
+# that stops being true.
 LOCAL_TZ = ZoneInfo("America/Chicago")
+
+# Who all data created before the multi-user migration belonged to - the
+# app had exactly one user before this schema existed. See
+# _migrate_legacy_single_user_schema.
+_LEGACY_OWNER_EMAIL = "adamrutter2469@gmail.com"
 
 
 def _today_local():
@@ -71,7 +84,13 @@ def _to_local_date(dt):
 # Retrying a few times with a short backoff rides out that window instead
 # of surfacing it as a crash; a real, non-transient problem (missing
 # file, corrupt DB, actual concurrent app instance) still raises once
-# retries are exhausted.
+# retries are exhausted. This also happens to help with the OTHER source
+# of the same IOException now that several people can use the app at
+# once - two people's writes landing close together on Streamlit Cloud's
+# one shared process. Fine at "a handful of friends" scale; if this ever
+# needs to handle real concurrent load, the right fix is a single
+# long-lived shared connection (or a real multi-writer database) instead
+# of opening/closing a new one per call, not a bigger retry count here.
 _CONNECT_RETRIES = 5
 _CONNECT_RETRY_DELAY_SECONDS = 0.2
 
@@ -97,39 +116,36 @@ def get_connection():
 
 def _ensure_schema(con):
     con.execute("""
-        CREATE TABLE IF NOT EXISTS words (
+        CREATE TABLE IF NOT EXISTS word_content (
             word            TEXT PRIMARY KEY,
             definition      TEXT NOT NULL,
             part_of_speech  TEXT,
             example         TEXT,
-            date_added      TIMESTAMP NOT NULL
+            synonyms        TEXT,
+            phonetic        TEXT,
+            audio_url       TEXT,
+            antonyms        TEXT,
+            etymology       TEXT
         )
     """)
-    # Added in Phase 2 - IF NOT EXISTS makes this a safe no-op migration
-    # against a database created under the Phase 1 schema.
-    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS synonyms TEXT")
-    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS phonetic TEXT")
-    # Added for the Thesaurus/Advanced sub-tabs - antonyms alongside the
-    # existing synonyms column, and etymology (blank for words saved
-    # before this migration; only backfilled on a re-add/lookup).
-    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS antonyms TEXT")
-    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS etymology TEXT")
-    # Real native-speaker pronunciation clip URL, when the dictionary API
-    # has one for this word - empty string means fall back to browser TTS.
-    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS audio_url TEXT")
-    # Added in Phase 3 - SM-2-style spaced repetition state. DEFAULT
-    # CURRENT_DATE on next_review_date means existing words (added before
-    # this migration) become immediately due, same as a brand new word -
-    # correct behavior, since they have no schedule yet either.
-    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS repetition INTEGER DEFAULT 0")
-    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS ease_factor DOUBLE DEFAULT 2.5")
-    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS interval_days INTEGER DEFAULT 0")
-    con.execute("ALTER TABLE words ADD COLUMN IF NOT EXISTS next_review_date DATE DEFAULT CURRENT_DATE")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS user_words (
+            user_id           TEXT NOT NULL,
+            word              TEXT NOT NULL REFERENCES word_content(word),
+            date_added        TIMESTAMP NOT NULL,
+            repetition        INTEGER DEFAULT 0,
+            ease_factor       DOUBLE DEFAULT 2.5,
+            interval_days     INTEGER DEFAULT 0,
+            next_review_date  DATE DEFAULT CURRENT_DATE,
+            PRIMARY KEY (user_id, word)
+        )
+    """)
     con.execute("CREATE SEQUENCE IF NOT EXISTS attempt_id_seq START 1")
     con.execute("""
         CREATE TABLE IF NOT EXISTS quiz_attempts (
             id            INTEGER PRIMARY KEY DEFAULT nextval('attempt_id_seq'),
-            word          TEXT NOT NULL REFERENCES words(word),
+            user_id       TEXT NOT NULL,
+            word          TEXT NOT NULL REFERENCES word_content(word),
             attempt_date  TIMESTAMP NOT NULL,
             your_answer   TEXT NOT NULL,
             accuracy      INTEGER NOT NULL,
@@ -138,37 +154,115 @@ def _ensure_schema(con):
             note          TEXT
         )
     """)
+    _migrate_legacy_single_user_schema(con)
 
 
-def add_word(word: str, definition: str, part_of_speech: str = "", example: str = "",
+def _migrate_legacy_single_user_schema(con):
+    """One-time migration from the pre-multiuser schema (a single `words`
+    table carrying both dictionary content AND this app's one-and-only
+    SM-2 schedule, plus a `quiz_attempts` table with no user_id column)
+    into the word_content/user_words split above.
+
+    Runs on every connection but is a no-op after the first successful
+    run - guarded by checking for the legacy `words` table AND the
+    absence of its own backup, so a second run (e.g. a fresh container
+    on the next redeploy) doesn't try to re-migrate data that's already
+    been moved and had `words` renamed out of the way. The legacy tables
+    are kept around renamed rather than dropped - cheap insurance
+    against a migration bug, costs nothing to leave them.
+
+    All migrated data is attributed to _LEGACY_OWNER_EMAIL - correct,
+    since the app had exactly one user (that account) for everything
+    created before this migration existed."""
+    tables = {r[0] for r in con.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+    ).fetchall()}
+    if "words" not in tables or "words_pre_multiuser_backup" in tables:
+        return
+
+    con.execute("""
+        INSERT INTO word_content (word, definition, part_of_speech, example, synonyms,
+                                   phonetic, audio_url, antonyms, etymology)
+        SELECT word, definition, part_of_speech, example, synonyms,
+               phonetic, audio_url, antonyms, etymology
+        FROM words
+    """)
+    con.execute("""
+        INSERT INTO user_words (user_id, word, date_added, repetition, ease_factor,
+                                 interval_days, next_review_date)
+        SELECT ?, word, date_added, repetition, ease_factor, interval_days, next_review_date
+        FROM words
+    """, [_LEGACY_OWNER_EMAIL])
+
+    # quiz_attempts: _ensure_schema's CREATE TABLE IF NOT EXISTS above
+    # was a no-op for a legacy DB (a table by that name already existed,
+    # just under the old shape with no user_id column) - detect that and
+    # move its data into the new shape via rename + recreate + reinsert,
+    # rather than fighting DuckDB's limited ALTER-constraint support (no
+    # clean way to repoint an existing FK from words(word) to
+    # word_content(word) in place).
+    cols = {r[1] for r in con.execute("PRAGMA table_info('quiz_attempts')").fetchall()}
+    if "user_id" not in cols:
+        con.execute("ALTER TABLE quiz_attempts RENAME TO quiz_attempts_legacy")
+        con.execute("""
+            CREATE TABLE quiz_attempts (
+                id            INTEGER PRIMARY KEY DEFAULT nextval('attempt_id_seq'),
+                user_id       TEXT NOT NULL,
+                word          TEXT NOT NULL REFERENCES word_content(word),
+                attempt_date  TIMESTAMP NOT NULL,
+                your_answer   TEXT NOT NULL,
+                accuracy      INTEGER NOT NULL,
+                got_right     TEXT,
+                got_missed    TEXT,
+                note          TEXT
+            )
+        """)
+        con.execute("""
+            INSERT INTO quiz_attempts (id, user_id, word, attempt_date, your_answer,
+                                        accuracy, got_right, got_missed, note)
+            SELECT id, ?, word, attempt_date, your_answer, accuracy, got_right, got_missed, note
+            FROM quiz_attempts_legacy
+        """, [_LEGACY_OWNER_EMAIL])
+        # Dropped rather than kept as a renamed backup (unlike `words`
+        # below) - it still holds a foreign key pointing at `words`,
+        # which blocks renaming `words` out of the way while anything
+        # still references it (confirmed live: DuckDB's ALTER TABLE
+        # RENAME refuses with a DependencyException in exactly this
+        # case). Safe to drop outright rather than work around that:
+        # every row was just copied into the new quiz_attempts table
+        # above, with nothing lost.
+        con.execute("DROP TABLE quiz_attempts_legacy")
+
+    con.execute("ALTER TABLE words RENAME TO words_pre_multiuser_backup")
+
+
+def add_word(user_id: str, word: str, definition: str, part_of_speech: str = "", example: str = "",
              synonyms: list[str] | None = None, phonetic: str = "", audio_url: str = "",
              antonyms: list[str] | None = None, etymology: str = ""):
-    """Upsert - re-adding an existing word overwrites its definition, so
-    corrections don't require deleting first. Spaced-repetition schedule
-    fields are preserved across a correction: date_added/repetition/
-    ease_factor/interval_days/next_review_date are only ever set by the
-    VALUES clause below (used the one time a row doesn't exist yet);
-    ON CONFLICT's SET list doesn't mention them at all, so an existing
-    row's own values for those columns are left exactly as they were.
+    """Upsert, in two parts:
 
-    Was INSERT OR REPLACE with the same "keep the old schedule" logic
-    done via a COALESCE((SELECT ... WHERE word = ?), fallback) subquery
-    per field, evaluated as part of the very INSERT it was guarding -
-    hit a genuine "Duplicate key ... violates primary key constraint"
-    in production (a self-referential subquery mid-INSERT is exactly
-    the kind of thing that can race against itself). DuckDB's own
-    documented upsert idiom - ON CONFLICT DO UPDATE, reading the row
-    actually being inserted via EXCLUDED - both reads cleaner and
-    doesn't share that failure mode."""
+    word_content (shared dictionary data) always gets the latest lookup
+    written over whatever was there - a correction from any user fixes
+    it for everyone, same as the old single-user "re-adding a word
+    overwrites its definition" behavior, just no longer tied to one
+    user's row.
+
+    user_words (this user's own list membership + schedule) is ON
+    CONFLICT DO NOTHING, not DO UPDATE - re-adding a word you already
+    have is a content correction (handled above), not a reason to reset
+    YOUR review schedule or date_added. Was previously "ON CONFLICT DO
+    UPDATE SET (everything except the schedule columns)" on one shared
+    table; splitting the two concerns into two tables/statements makes
+    that same rule simpler to see at a glance instead of requiring an
+    exclusion list."""
     con = get_connection()
     w = word.strip()
     con.execute(
         """
-        INSERT INTO words
+        INSERT INTO word_content
             (word, definition, part_of_speech, example, synonyms, phonetic, audio_url,
-             antonyms, etymology, date_added,
-             repetition, ease_factor, interval_days, next_review_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 2.5, 0, ?)
+             antonyms, etymology)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (word) DO UPDATE SET
             definition = EXCLUDED.definition,
             part_of_speech = EXCLUDED.part_of_speech,
@@ -181,8 +275,15 @@ def add_word(word: str, definition: str, part_of_speech: str = "", example: str 
         """,
         [w, definition.strip(), part_of_speech.strip(), example.strip(),
          ", ".join(synonyms) if synonyms else "", phonetic.strip(), audio_url.strip(),
-         ", ".join(antonyms) if antonyms else "", etymology.strip(),
-         datetime.now(timezone.utc), _today_local()],
+         ", ".join(antonyms) if antonyms else "", etymology.strip()],
+    )
+    con.execute(
+        """
+        INSERT INTO user_words (user_id, word, date_added, repetition, ease_factor, interval_days, next_review_date)
+        VALUES (?, ?, ?, 0, 2.5, 0, ?)
+        ON CONFLICT (user_id, word) DO NOTHING
+        """,
+        [user_id, w, datetime.now(timezone.utc), _today_local()],
     )
     con.close()
     r2_storage.upload_db()
@@ -190,51 +291,68 @@ def add_word(word: str, definition: str, part_of_speech: str = "", example: str 
 
 def set_audio_url(word: str, audio_url: str):
     """Backfill helper - update just the audio clip for an existing word
-    without touching its definition or anything else."""
+    without touching its definition or anything else. No user_id: audio
+    is dictionary content (word_content), shared like everything else
+    there."""
     con = get_connection()
-    con.execute("UPDATE words SET audio_url = ? WHERE word = ?", [audio_url.strip(), word])
+    con.execute("UPDATE word_content SET audio_url = ? WHERE word = ?", [audio_url.strip(), word])
     con.close()
     r2_storage.upload_db()
 
 
-def delete_word(word: str):
+def delete_word(user_id: str, word: str):
+    """Removes the word from THIS user's list and quiz history only -
+    word_content (the shared dictionary cache) is left alone, since
+    another user may still have the same word in their own list. A
+    word_content row with no user_words referencing it just sits there
+    unused afterward - harmless, not worth an extra query to garbage-
+    collect it."""
     con = get_connection()
-    con.execute("DELETE FROM quiz_attempts WHERE word = ?", [word])
-    con.execute("DELETE FROM words WHERE word = ?", [word])
+    con.execute("DELETE FROM quiz_attempts WHERE user_id = ? AND word = ?", [user_id, word])
+    con.execute("DELETE FROM user_words WHERE user_id = ? AND word = ?", [user_id, word])
     con.close()
     r2_storage.upload_db()
 
 
-def get_all_words():
-    """Words joined with attempt stats: times_quizzed, avg_accuracy, last_quizzed."""
+def get_all_words(user_id: str):
+    """This user's words joined with attempt stats: times_quizzed,
+    avg_accuracy, last_quizzed - scoped to their own quiz_attempts only,
+    even though the word itself may exist in other users' lists too."""
     con = get_connection()
     rows = con.execute("""
         SELECT
-            w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic,
-            w.audio_url, w.antonyms, w.etymology, w.date_added, w.next_review_date,
-            w.interval_days, w.repetition,
+            wc.word, wc.definition, wc.part_of_speech, wc.example, wc.synonyms, wc.phonetic,
+            wc.audio_url, wc.antonyms, wc.etymology, uw.date_added, uw.next_review_date,
+            uw.interval_days, uw.repetition,
             COUNT(a.id)                    AS times_quizzed,
             ROUND(AVG(a.accuracy), 1)      AS avg_accuracy,
             MAX(a.attempt_date)            AS last_quizzed
-        FROM words w
-        LEFT JOIN quiz_attempts a ON a.word = w.word
-        GROUP BY w.word, w.definition, w.part_of_speech, w.example, w.synonyms, w.phonetic,
-                 w.audio_url, w.antonyms, w.etymology, w.date_added, w.next_review_date,
-                 w.interval_days, w.repetition
-        ORDER BY w.date_added DESC
-    """).fetchall()
+        FROM user_words uw
+        JOIN word_content wc ON wc.word = uw.word
+        LEFT JOIN quiz_attempts a ON a.word = uw.word AND a.user_id = uw.user_id
+        WHERE uw.user_id = ?
+        GROUP BY wc.word, wc.definition, wc.part_of_speech, wc.example, wc.synonyms, wc.phonetic,
+                 wc.audio_url, wc.antonyms, wc.etymology, uw.date_added, uw.next_review_date,
+                 uw.interval_days, uw.repetition
+        ORDER BY uw.date_added DESC
+    """, [user_id]).fetchall()
     cols = [d[0] for d in con.description]
     con.close()
     return [dict(zip(cols, r)) for r in rows]
 
 
-def get_word(word: str):
+def get_word(user_id: str, word: str):
+    """Dictionary content for `word`, but only if it's actually in THIS
+    user's list (word_content existing globally - e.g. a friend already
+    added it - doesn't count; this answers "is it in MY list", same as
+    the old single-user version answered "does it exist at all")."""
     con = get_connection()
     row = con.execute(
-        """SELECT word, definition, part_of_speech, example, synonyms, phonetic, audio_url,
-                  antonyms, etymology
-           FROM words WHERE word = ?""",
-        [word],
+        """SELECT wc.word, wc.definition, wc.part_of_speech, wc.example, wc.synonyms, wc.phonetic,
+                  wc.audio_url, wc.antonyms, wc.etymology
+           FROM user_words uw JOIN word_content wc ON wc.word = uw.word
+           WHERE uw.user_id = ? AND uw.word = ?""",
+        [user_id, word],
     ).fetchone()
     con.close()
     if row is None:
@@ -246,27 +364,26 @@ def get_word(word: str):
     }
 
 
-def random_word():
-    """A random word to quiz on. Returns None if the deck is empty.
-    Superseded by next_due_word() for normal quizzing (Phase 3) - kept
-    as a building block / fallback."""
+def random_word(user_id: str):
+    """A random word from this user's list. Returns None if their deck
+    is empty. Superseded by next_due_word() for normal quizzing
+    (Phase 3) - kept as a building block / fallback."""
     con = get_connection()
-    row = con.execute(
-        "SELECT word FROM words USING SAMPLE 1"
-    ).fetchone()
+    rows = con.execute("SELECT word FROM user_words WHERE user_id = ?", [user_id]).fetchall()
     con.close()
-    return row[0] if row else None
+    return random.choice(rows)[0] if rows else None
 
 
-def next_due_word():
-    """A random word among whichever are due per the spaced-repetition
-    schedule - not "the most overdue," deliberately: with 50 words due
-    on a given day, always serving strict next_review_date/date_added
-    order made the deck feel like it was replaying in the same fixed
-    (effectively alphabetical, since that's how date_added tended to
-    sort) sequence every time. The due-ness gate itself is untouched -
-    this only randomizes WHICH of the due words comes up next, not
-    whether a word counts as due. Returns None if nothing is due today.
+def next_due_word(user_id: str):
+    """A random word among whichever of THIS user's words are due per
+    the spaced-repetition schedule - not "the most overdue," deliberately:
+    with 50 words due on a given day, always serving strict
+    next_review_date/date_added order made the deck feel like it was
+    replaying in the same fixed (effectively alphabetical, since that's
+    how date_added tended to sort) sequence every time. The due-ness
+    gate itself is untouched - this only randomizes WHICH of the due
+    words comes up next, not whether a word counts as due. Returns None
+    if nothing is due today.
 
     Among due words, one already quizzed today still sorts behind every
     due word that hasn't been - the SM-2 schedule alone doesn't always
@@ -282,29 +399,29 @@ def next_due_word():
     day_start, day_end = _local_day_utc_bounds(today)
     con = get_connection()
     row = con.execute("""
-        SELECT w.word FROM words w
+        SELECT uw.word FROM user_words uw
         LEFT JOIN (
             SELECT word, MAX(attempt_date) AS last_today
             FROM quiz_attempts
-            WHERE attempt_date >= ? AND attempt_date < ?
+            WHERE user_id = ? AND attempt_date >= ? AND attempt_date < ?
             GROUP BY word
-        ) today ON today.word = w.word
-        WHERE w.next_review_date <= ?
+        ) today ON today.word = uw.word
+        WHERE uw.user_id = ? AND uw.next_review_date <= ?
         ORDER BY (today.word IS NOT NULL) ASC, today.last_today ASC, RANDOM()
         LIMIT 1
-    """, [day_start, day_end, today]).fetchone()
+    """, [user_id, day_start, day_end, user_id, today]).fetchone()
     con.close()
     return row[0] if row else None
 
 
-def soonest_upcoming():
-    """(word, next_review_date) for whichever word comes due soonest,
-    regardless of whether it's due yet - used for the "all caught up,
-    quiz ahead of schedule anyway" fallback. Kept as the single genuinely
-    soonest-due word (not randomized like next_due_word) - "ahead of
-    schedule" only makes sense pointed at what's actually closest, not
-    a random pick from the whole deck. Returns (None, None) if the deck
-    is empty.
+def soonest_upcoming(user_id: str):
+    """(word, next_review_date) for whichever of THIS user's words comes
+    due soonest, regardless of whether it's due yet - used for the "all
+    caught up, quiz ahead of schedule anyway" fallback. Kept as the
+    single genuinely soonest-due word (not randomized like
+    next_due_word) - "ahead of schedule" only makes sense pointed at
+    what's actually closest, not a random pick from the whole deck.
+    Returns (None, None) if the deck is empty.
 
     Same "already quizzed today sorts last" rule as next_due_word() -
     without it, practice mode on a small deck could hand back the word
@@ -314,31 +431,34 @@ def soonest_upcoming():
     day_start, day_end = _local_day_utc_bounds(today)
     con = get_connection()
     row = con.execute("""
-        SELECT w.word, w.next_review_date FROM words w
+        SELECT uw.word, uw.next_review_date FROM user_words uw
         LEFT JOIN (
             SELECT word, MAX(attempt_date) AS last_today
             FROM quiz_attempts
-            WHERE attempt_date >= ? AND attempt_date < ?
+            WHERE user_id = ? AND attempt_date >= ? AND attempt_date < ?
             GROUP BY word
-        ) today ON today.word = w.word
+        ) today ON today.word = uw.word
+        WHERE uw.user_id = ?
         ORDER BY (today.word IS NOT NULL) ASC, today.last_today ASC,
-                 w.next_review_date ASC
+                 uw.next_review_date ASC
         LIMIT 1
-    """, [day_start, day_end]).fetchone()
+    """, [user_id, day_start, day_end, user_id]).fetchone()
     con.close()
     return (row[0], row[1]) if row else (None, None)
 
 
-def update_schedule(word: str, accuracy: int):
-    """SM-2-inspired spaced-repetition update. The AI grader returns a
-    continuous 0-100 accuracy score rather than SM-2's discrete 0-5
-    "quality" rating, so this maps accuracy onto quality buckets first,
-    then applies the standard SM-2 interval/ease-factor update. Returns
-    the new schedule so the caller can show "next review in N days."
+def update_schedule(user_id: str, word: str, accuracy: int):
+    """SM-2-inspired spaced-repetition update, scoped to this user's own
+    schedule for `word`. The AI grader returns a continuous 0-100
+    accuracy score rather than SM-2's discrete 0-5 "quality" rating, so
+    this maps accuracy onto quality buckets first, then applies the
+    standard SM-2 interval/ease-factor update. Returns the new schedule
+    so the caller can show "next review in N days."
     """
     con = get_connection()
     row = con.execute(
-        "SELECT repetition, ease_factor, interval_days FROM words WHERE word = ?", [word]
+        "SELECT repetition, ease_factor, interval_days FROM user_words WHERE user_id = ? AND word = ?",
+        [user_id, word],
     ).fetchone()
     if row is None:
         con.close()
@@ -377,21 +497,22 @@ def update_schedule(word: str, accuracy: int):
     next_review_date = _today_local() + timedelta(days=interval_days)
     con.execute(
         """
-        UPDATE words SET repetition = ?, ease_factor = ?, interval_days = ?, next_review_date = ?
-        WHERE word = ?
+        UPDATE user_words SET repetition = ?, ease_factor = ?, interval_days = ?, next_review_date = ?
+        WHERE user_id = ? AND word = ?
         """,
-        [repetition, ease_factor, interval_days, next_review_date, word],
+        [repetition, ease_factor, interval_days, next_review_date, user_id, word],
     )
     con.close()
     r2_storage.upload_db()
     return {"repetition": repetition, "interval_days": interval_days, "next_review_date": next_review_date}
 
 
-def get_progress_stats():
+def get_progress_stats(user_id: str):
     """Total/Mastered/Learning/Needs Work counts + overall average
-    accuracy, per the project plan's progress dashboard. Every word
-    falls into exactly one of the three buckets (including never-quizzed
-    words, bucketed as Learning - they're in the pipeline, just untested):
+    accuracy for THIS user, per the project plan's progress dashboard.
+    Every word falls into exactly one of the three buckets (including
+    never-quizzed words, bucketed as Learning - they're in the pipeline,
+    just untested):
       Mastered:   quizzed, repetition >= 3 (schedule has stretched out
                   several reviews) AND avg accuracy >= 80
       Needs Work: quizzed at least once, avg accuracy < 60
@@ -405,11 +526,12 @@ def get_progress_stats():
             SUM(CASE WHEN stats.n > 0 AND stats.avg_accuracy < 60 THEN 1 ELSE 0 END) AS needs_work,
             ROUND(AVG(CASE WHEN stats.n > 0 THEN stats.avg_accuracy END), 1) AS overall_avg
         FROM (
-            SELECT w.word, w.repetition AS rep, COUNT(a.id) AS n, AVG(a.accuracy) AS avg_accuracy
-            FROM words w LEFT JOIN quiz_attempts a ON a.word = w.word
-            GROUP BY w.word, w.repetition
+            SELECT uw.word, uw.repetition AS rep, COUNT(a.id) AS n, AVG(a.accuracy) AS avg_accuracy
+            FROM user_words uw LEFT JOIN quiz_attempts a ON a.word = uw.word AND a.user_id = uw.user_id
+            WHERE uw.user_id = ?
+            GROUP BY uw.word, uw.repetition
         ) stats
-    """).fetchone()
+    """, [user_id]).fetchone()
     con.close()
     total, mastered, needs_work, overall_avg = row
     mastered = mastered or 0
@@ -420,16 +542,18 @@ def get_progress_stats():
     }
 
 
-def get_daily_accuracy_trend():
-    """(date, avg_accuracy) per day across every attempt, bucketed by
-    LOCAL_TZ (see its own comment - not the server's own UTC day) - the
-    progress-over-time chart. Grouped in Python rather than
+def get_daily_accuracy_trend(user_id: str):
+    """(date, avg_accuracy) per day across this user's attempts,
+    bucketed by LOCAL_TZ (see its own comment - not the server's own UTC
+    day) - the progress-over-time chart. Grouped in Python rather than
     `CAST(attempt_date AS DATE)`/`GROUP BY` in SQL - the row count here
     is small (one row per quiz attempt, ever), so fetching everything
     and bucketing it here costs nothing, and it keeps the timezone
     conversion out of SQL entirely (see LOCAL_TZ's comment on why)."""
     con = get_connection()
-    rows = con.execute("SELECT attempt_date, accuracy FROM quiz_attempts").fetchall()
+    rows = con.execute(
+        "SELECT attempt_date, accuracy FROM quiz_attempts WHERE user_id = ?", [user_id]
+    ).fetchall()
     con.close()
     by_day = {}
     for attempt_date, accuracy in rows:
@@ -438,14 +562,17 @@ def get_daily_accuracy_trend():
     return sorted((day, round(sum(vals) / len(vals), 1)) for day, vals in by_day.items())
 
 
-def get_daily_words_quizzed_trend():
-    """(date, total_attempts) per day, bucketed by LOCAL_TZ - how much
-    quizzing happened each day. Counts every attempt, not distinct
-    words - quizzing the same word twice in one day (a miss seen again,
-    a "No Clue" retry) counts twice, matching "how much quizzing did I
-    do today" rather than "how many different words did I touch.\""""
+def get_daily_words_quizzed_trend(user_id: str):
+    """(date, total_attempts) per day for this user, bucketed by
+    LOCAL_TZ - how much quizzing happened each day. Counts every
+    attempt, not distinct words - quizzing the same word twice in one
+    day (a miss seen again, a "No Clue" retry) counts twice, matching
+    "how much quizzing did I do today" rather than "how many different
+    words did I touch.\""""
     con = get_connection()
-    rows = con.execute("SELECT attempt_date FROM quiz_attempts").fetchall()
+    rows = con.execute(
+        "SELECT attempt_date FROM quiz_attempts WHERE user_id = ?", [user_id]
+    ).fetchall()
     con.close()
     by_day = {}
     for (attempt_date,) in rows:
@@ -454,9 +581,9 @@ def get_daily_words_quizzed_trend():
     return sorted(by_day.items())
 
 
-def get_quiz_streak(threshold: int = 10):
-    """Current streak of consecutive LOCAL_TZ days with at least
-    `threshold` words quizzed, walking backward from today.
+def get_quiz_streak(user_id: str, threshold: int = 10):
+    """This user's current streak of consecutive LOCAL_TZ days with at
+    least `threshold` words quizzed, walking backward from today.
 
     Today doesn't break the streak just for being incomplete - it's
     still in progress, so if today hasn't hit the threshold yet, the
@@ -466,7 +593,9 @@ def get_quiz_streak(threshold: int = 10):
     lookup - defaulting to 0 - ends the streak the same as a too-low
     count would)."""
     con = get_connection()
-    rows = con.execute("SELECT attempt_date FROM quiz_attempts").fetchall()
+    rows = con.execute(
+        "SELECT attempt_date FROM quiz_attempts WHERE user_id = ?", [user_id]
+    ).fetchall()
     con.close()
     if not rows:
         return 0
@@ -483,7 +612,7 @@ def get_quiz_streak(threshold: int = 10):
     return streak
 
 
-def save_attempt(word: str, your_answer: str, accuracy: int, feedback: str):
+def save_attempt(user_id: str, word: str, your_answer: str, accuracy: int, feedback: str):
     """got_right/got_missed (separate bullet lists) are superseded by a
     single feedback string with inline <right>/<wrong> tags (see
     grading.GradeResult) - the columns stay (older rows still have real
@@ -493,23 +622,23 @@ def save_attempt(word: str, your_answer: str, accuracy: int, feedback: str):
     con = get_connection()
     con.execute(
         """
-        INSERT INTO quiz_attempts (word, attempt_date, your_answer, accuracy, got_right, got_missed, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO quiz_attempts (user_id, word, attempt_date, your_answer, accuracy, got_right, got_missed, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        [word, datetime.now(timezone.utc), your_answer, accuracy, "", "", feedback],
+        [user_id, word, datetime.now(timezone.utc), your_answer, accuracy, "", "", feedback],
     )
     con.close()
     r2_storage.upload_db()
 
 
-def get_attempts(word: str):
+def get_attempts(user_id: str, word: str):
     con = get_connection()
     rows = con.execute(
         """
         SELECT attempt_date, your_answer, accuracy, got_right, got_missed, note
-        FROM quiz_attempts WHERE word = ? ORDER BY attempt_date DESC
+        FROM quiz_attempts WHERE user_id = ? AND word = ? ORDER BY attempt_date DESC
         """,
-        [word],
+        [user_id, word],
     ).fetchall()
     con.close()
     return [

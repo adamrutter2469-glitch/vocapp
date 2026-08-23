@@ -619,14 +619,26 @@ st.markdown(
 )
 
 # Every viewer has to sign in with an allowlisted Google account before
-# anything else on the page renders - see auth.py. current_user_email
-# isn't used for per-user data scoping yet (that's a follow-up step,
-# everyone still shares one word list for now); this call is just the
-# access gate.
-current_user_email = auth.require_login()
+# anything else on the page renders - see auth.py. Stashed in
+# st.session_state, not a bare module-level variable - Streamlit reruns
+# this whole script inside the SAME shared module namespace for every
+# session on Streamlit Cloud's one shared process (confirmed by how
+# r2_storage.py's own module-level caching already relies on exactly
+# that persistence), so a plain `current_user_email = ...` here would be
+# a mutable global two different friends' concurrent reruns could race
+# on and clobber each other's identity mid-script. st.session_state is
+# the one thing Streamlit actually guarantees is isolated per browser
+# session.
+st.session_state["user_id"] = auth.require_login()
 with st.container(key="account_row"):
-    st.caption(current_user_email)
+    st.caption(st.session_state["user_id"])
     st.button("Log out", key="logout_btn", on_click=st.logout)
+
+
+def _uid() -> str:
+    """This session's signed-in user's email - the id every db.py call
+    below scopes its data by."""
+    return st.session_state["user_id"]
 
 def _definition_senses(definition: str) -> list[str]:
     """dictionary.py's lookup_word() joins up to 3 senses with "\n" -
@@ -803,9 +815,9 @@ def _save(word, info, clear_search=True):
     # accidentally re-adding a word you forgot you already had silently
     # "succeeds" with no sign anything was different - check first so
     # the message can tell those two cases apart.
-    already_had_it = db.get_word(word) is not None
+    already_had_it = db.get_word(_uid(), word) is not None
     db.add_word(
-        word, info["definition"], info["part_of_speech"], info["example"],
+        _uid(), word, info["definition"], info["part_of_speech"], info["example"],
         info["synonyms"], info["phonetic"], info["audio_url"],
         info["antonyms"], info["etymology"],
     )
@@ -957,14 +969,14 @@ def _render_grading_feedback(feedback: str):
 # ------------------------------------------------------------
 with tab_quiz:
     if st.session_state.quiz_word is None:
-        w = db.next_due_word()
+        w = db.next_due_word(_uid())
         if w is not None:
             st.session_state.quiz_word = w
             st.session_state.quiz_result = None
 
     if st.session_state.quiz_word is None:
         # Nothing due per the spaced-repetition schedule right now.
-        soonest, soonest_date = db.soonest_upcoming()
+        soonest, soonest_date = db.soonest_upcoming(_uid())
         if soonest is None:
             st.info("No words yet - add some in the **Add Word** tab first.")
         else:
@@ -976,7 +988,7 @@ with tab_quiz:
                 st.rerun()
 
     if st.session_state.quiz_word:
-        word_row = db.get_word(st.session_state.quiz_word)
+        word_row = db.get_word(_uid(), st.session_state.quiz_word)
 
         if st.session_state.quiz_result is not None:
             # Next word lives up here (top-right, beside the word) once an
@@ -1033,9 +1045,9 @@ with tab_quiz:
                             result = grading.grade_definition(
                                 word_row["word"], word_row["definition"], answer
                             )
-                            db.save_attempt(word_row["word"], answer, result.accuracy, result.feedback)
+                            db.save_attempt(_uid(), word_row["word"], answer, result.accuracy, result.feedback)
                             st.session_state.quiz_schedule = db.update_schedule(
-                                word_row["word"], result.accuracy
+                                _uid(), word_row["word"], result.accuracy
                             )
                             st.session_state.quiz_result = result
                             st.session_state.last_answer = answer
@@ -1053,8 +1065,8 @@ with tab_quiz:
                 result = grading.GradeResult(
                     accuracy=0, feedback="No definition provided - marked as a miss.",
                 )
-                db.save_attempt(word_row["word"], "*silence*", result.accuracy, result.feedback)
-                st.session_state.quiz_schedule = db.update_schedule(word_row["word"], result.accuracy)
+                db.save_attempt(_uid(), word_row["word"], "*silence*", result.accuracy, result.feedback)
+                st.session_state.quiz_schedule = db.update_schedule(_uid(), word_row["word"], result.accuracy)
                 st.session_state.quiz_result = result
                 st.session_state.last_answer = "*silence*"
                 st.rerun()
@@ -1407,7 +1419,7 @@ def _cancel_bulk_confirm():
 
 def _do_bulk_delete(selected):
     for word in selected:
-        db.delete_word(word)
+        db.delete_word(_uid(), word)
         st.session_state.pop(f"sel_{word}", None)
     st.session_state["confirm_bulk_delete"] = False
     st.session_state["bulk_delete_msg"] = f"Deleted {len(selected)} word(s)."
@@ -1419,12 +1431,12 @@ def _do_bulk_delete(selected):
 
 
 def _do_single_delete(word):
-    db.delete_word(word)
+    db.delete_word(_uid(), word)
     st.session_state.pop(f"sel_{word}", None)
 
 
 with tab_words:
-    all_words = db.get_all_words()
+    all_words = db.get_all_words(_uid())
     if not all_words:
         st.info("No words yet.")
     else:
@@ -1562,7 +1574,7 @@ with tab_words:
                             st.caption(f"Next review: {w['next_review_date']:%b %d, %Y}")
                         if w["times_quizzed"] > 0:
                             st.markdown("**Attempt history:**")
-                            for a in db.get_attempts(w["word"]):
+                            for a in db.get_attempts(_uid(), w["word"]):
                                 st.markdown(f"- {a['attempt_date']:%b %d}: {a['accuracy']}% — \"{a['your_answer']}\"")
                         st.button("Delete", key=f"del_{w['word']}", on_click=_do_single_delete, args=(w["word"],))
 
@@ -1576,7 +1588,7 @@ with tab_words:
 # Progress
 # ------------------------------------------------------------
 with tab_progress:
-    stats = db.get_progress_stats()
+    stats = db.get_progress_stats(_uid())
     if stats["total"] == 0:
         st.info("No words yet.")
     else:
@@ -1628,7 +1640,7 @@ with tab_progress:
             # 10+ words/day, per the "consecutive days with at least 10
             # words quizzed" ask - see db.get_quiz_streak's docstring for
             # exactly how today's still-in-progress count is handled.
-            streak = db.get_quiz_streak(threshold=10)
+            streak = db.get_quiz_streak(_uid(), threshold=10)
             with st.container(key="progress_streak_card"):
                 st.markdown(
                     "<span class='stat-top'>"
@@ -1655,8 +1667,8 @@ with tab_progress:
         # both axes hidden entirely (no numbers requested), every value
         # is written directly on its own mark instead - the count near
         # the BOTTOM of each bar, clear of the line, which sits higher.
-        acc_trend = db.get_daily_accuracy_trend()
-        words_trend = db.get_daily_words_quizzed_trend()
+        acc_trend = db.get_daily_accuracy_trend(_uid())
+        words_trend = db.get_daily_words_quizzed_trend(_uid())
         if len(acc_trend) >= 2 and len(words_trend) >= 2:
             st.subheader("Accuracy over time")
             acc_df = pd.DataFrame(acc_trend, columns=["date", "avg_accuracy"])

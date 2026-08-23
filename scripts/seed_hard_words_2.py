@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import db
 import dictionary
 
+OWNER = db._LEGACY_OWNER_EMAIL
+
 WORDS = [
     "abstemious", "abstruse", "acerbic", "admonish", "alacrity",
     "ameliorate", "anachronistic", "antediluvian", "apocryphal", "arcane",
@@ -41,7 +43,7 @@ WORDS = [
     "ingenuous", "inimical", "iniquity", "insidious", "insolent",
 ]
 
-existing = {w["word"].lower() for w in db.get_all_words()}
+existing = {w["word"].lower() for w in db.get_all_words(OWNER)}
 
 ok, skipped, failed = [], [], []
 for word in WORDS:
@@ -52,7 +54,7 @@ for word in WORDS:
     try:
         info = dictionary.lookup_word(word)
         db.add_word(
-            word, info["definition"], info["part_of_speech"], info["example"],
+            OWNER, word, info["definition"], info["part_of_speech"], info["example"],
             info["synonyms"], info["phonetic"], info["audio_url"],
         )
         ok.append(word)
