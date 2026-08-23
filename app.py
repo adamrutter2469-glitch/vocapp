@@ -18,6 +18,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 from PIL import Image
+import auth
 import db
 import dictionary
 import frequency
@@ -583,10 +584,49 @@ st.markdown(
         border-radius: 2px;
         vertical-align: middle;
     }}
+
+    /* Signed-in-as row (auth.py) - pinned as a small fixed badge in the
+       top-right corner, OUTSIDE normal document flow. Deliberately not a
+       normal in-flow row: .st-key-header_logo (below) floats itself
+       upward via position:absolute + top:-58px relative to header_row,
+       assuming nothing else occupies the blank space above header_row -
+       an in-flow account_row would eat into exactly that space and the
+       logo would land on top of it (confirmed live). Taking account_row
+       out of flow entirely sidesteps that rather than fighting it. */
+    .st-key-account_row {{
+        position: fixed;
+        top: 68px;
+        right: 20px;
+        z-index: 1000;
+        width: max-content;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 0.5rem;
+    }}
+    .st-key-account_row [data-testid="stCaptionContainer"] {{
+        margin: 0;
+        white-space: nowrap;
+    }}
+    .st-key-account_row button {{
+        padding: 0.1rem 0.6rem;
+        font-size: 0.8rem;
+        white-space: nowrap;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# Every viewer has to sign in with an allowlisted Google account before
+# anything else on the page renders - see auth.py. current_user_email
+# isn't used for per-user data scoping yet (that's a follow-up step,
+# everyone still shares one word list for now); this call is just the
+# access gate.
+current_user_email = auth.require_login()
+with st.container(key="account_row"):
+    st.caption(current_user_email)
+    st.button("Log out", key="logout_btn", on_click=st.logout)
 
 def _definition_senses(definition: str) -> list[str]:
     """dictionary.py's lookup_word() joins up to 3 senses with "\n" -
