@@ -28,6 +28,7 @@ import streamlit as st
 # to add or remove a friend.
 ALLOWED_EMAILS = {
     "adamrutter2469@gmail.com",
+    "riley.kaitlyn96@gmail.com",
 }
 
 
