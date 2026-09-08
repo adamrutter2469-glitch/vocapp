@@ -11,6 +11,7 @@ Phase 4 (polish - images, animations, mobile layout) comes later.
 
 import html
 import re
+from datetime import timedelta
 from pathlib import Path
 
 import requests
@@ -559,6 +560,16 @@ st.markdown(
         line-height: 1.4;
     }}
 
+    /* Progress tab: the combo chart itself gets an explicit pixel width
+       (see chart_width in app.py, scaled to however many days/bars it's
+       showing) rather than stretching to the container - this wrapper
+       is what lets it overflow and scroll horizontally instead of
+       getting clipped when that width exceeds the page. */
+    .st-key-progress_chart_scroll {{
+        overflow-x: auto;
+        overflow-y: hidden;
+    }}
+
     /* Progress tab: legend under the accuracy/words-quizzed combo chart -
        everything inline (no stacked lines), so this one needs neither
        the span trick nor a min-height override. */
@@ -573,7 +584,7 @@ st.markdown(
     .st-key-progress_chart_legend .cl-swatch-bar {{
         display: inline-block;
         width: 14px; height: 10px; border-radius: 2px;
-        background: #DCE8FB;
+        background: #001D56;
         border-top: 2px solid #5BABFB;
         vertical-align: middle;
     }}
@@ -1654,7 +1665,7 @@ with tab_progress:
                 with st.container(key="progress_accuracy_card"):
                     st.markdown(
                         "<span class='stat-top'>"
-                        f"<span class='stat-value'>{stats['overall_avg']}%</span>"
+                        f"<span class='stat-value'>{stats['overall_avg']:.1f}%</span>"
                         "</span>"
                         "<span class='stat-label'>Average Accuracy</span>",
                         unsafe_allow_html=True,
@@ -1669,8 +1680,26 @@ with tab_progress:
         # the BOTTOM of each bar, clear of the line, which sits higher.
         acc_trend = db.get_daily_accuracy_trend(_uid())
         words_trend = db.get_daily_words_quizzed_trend(_uid())
-        if len(acc_trend) >= 2 and len(words_trend) >= 2:
+        has_alltime_trend = len(acc_trend) >= 2 and len(words_trend) >= 2
+        if has_alltime_trend:
             st.subheader("Accuracy over time")
+
+            # Defaults to the last 30 days - the full history eventually
+            # produces enough bars that a fixed per-bar width (see
+            # chart_width below) would need real horizontal scrolling to
+            # stay readable; 30 days is the common case that still fits
+            # without it, with "All time" one click away.
+            st.session_state.setdefault("progress_chart_range", "Last 30 days")
+            st.radio(
+                "Date range", ["Last 30 days", "All time"], key="progress_chart_range",
+                horizontal=True, label_visibility="collapsed",
+            )
+            if st.session_state["progress_chart_range"] == "Last 30 days":
+                cutoff = db.today_local() - timedelta(days=29)
+                acc_trend = [(d, v) for d, v in acc_trend if d >= cutoff]
+                words_trend = [(d, v) for d, v in words_trend if d >= cutoff]
+
+        if len(acc_trend) >= 2 and len(words_trend) >= 2:
             acc_df = pd.DataFrame(acc_trend, columns=["date", "avg_accuracy"])
             words_df = pd.DataFrame(words_trend, columns=["date", "words_quizzed"])
             # Plotted as an ordinal category ("Aug 14"), not a continuous
@@ -1684,7 +1713,32 @@ with tab_progress:
             # buckets - so ordinal sidesteps the whole tick-interval
             # question: exactly one tick per actual date, always.
             date_order = sorted(set(acc_df["date"]) | set(words_df["date"]))
-            date_labels = {d: d.strftime("%b %d") for d in date_order}
+            # Per-bar step: 30 bars (the default "Last 30 days" view)
+            # would exactly fill the chart's real measured width
+            # (PROGRESS_CHART_WIDTH_PX, from .st-key-progress_chart_scroll's
+            # getBoundingClientRect - Streamlit's centered layout caps it
+            # there regardless of viewport size) at zero gap - then
+            # narrowed another 30% on top of that per its own ask, still
+            # touching edge to edge (the darker fill's own stroke outline
+            # is what keeps adjacent bars visually separable - see
+            # mark_bar below). Net effect: the default view no longer
+            # fills the full width edge to edge (some blank space on the
+            # right instead) - an accepted trade-off for bars this much
+            # narrower being possible at all. Beyond 30 days ("All time"
+            # with a longer history), the chart keeps growing at the same
+            # per-bar step instead of cramming more bars into a fixed
+            # width, and .st-key-progress_chart_scroll's overflow-x
+            # handles the rest.
+            PROGRESS_CHART_WIDTH_PX = 704
+            DEFAULT_WINDOW_DAYS = 30
+            BAR_STEP_PX = (PROGRESS_CHART_WIDTH_PX / DEFAULT_WINDOW_DAYS) * 0.7
+            MIN_CHART_WIDTH_PX = 300
+            chart_width = max(MIN_CHART_WIDTH_PX, len(date_order) * BAR_STEP_PX)
+            # "8/14" not "Aug 14" - shorter, and strftime's portable
+            # cross-platform codes don't include a no-leading-zero month/
+            # day (%-m/%-d is Linux/Mac only, not Windows) - built by
+            # hand instead so it doesn't depend on the OS's strftime.
+            date_labels = {d: f"{d.month}/{d.day}" for d in date_order}
             label_order = [date_labels[d] for d in date_order]
             acc_df["date_label"] = acc_df["date"].map(date_labels)
             words_df["date_label"] = words_df["date"].map(date_labels)
@@ -1736,8 +1790,8 @@ with tab_progress:
             date_x = alt.X("date_label:O", sort=label_order, axis=None)
             bar = (
                 alt.Chart(words_df)
-                .mark_bar(color="#DCE8FB", stroke="#5BABFB", strokeWidth=1.5, size=44,
-                          cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+                .mark_bar(color="#001D56", stroke="#5BABFB", strokeWidth=1, size=BAR_STEP_PX,
+                          cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
                 .encode(
                     x=date_x,
                     y=alt.Y("words_quizzed:Q", axis=None, scale=shared_scale),
@@ -1747,13 +1801,22 @@ with tab_progress:
             )
             bar_labels = (
                 alt.Chart(words_df)
-                .mark_text(fontWeight="bold", fontSize=11, color="#001D56")
+                .mark_text(fontWeight="bold", fontSize=9, color="#FFFFFF", angle=270)
                 .encode(x=date_x, y=alt.Y("label_y:Q", axis=None, scale=shared_scale),
                         text=alt.Text("words_quizzed:Q"))
             )
             date_labels_layer = (
                 alt.Chart(words_df)
-                .mark_text(dy=16, fontSize=11, color="#94A6CC")
+                # dx, not dy, is what pushes this DOWN the screen, away
+                # from the bars sitting right above at y=0 - a mark_text
+                # offset is applied in the text's own local frame BEFORE
+                # its `angle` rotation, and at angle=270 that swaps the
+                # two axes (confirmed live: dy=8 was actually landing as
+                # a same-size sideways shift, not a downward one, which
+                # is what caused the labels to visibly overlap the bars'
+                # bottom edge - measured a -1.2px gap, i.e. true overlap,
+                # at dx=-8). -15 leaves a clean ~6px gap below the bars.
+                .mark_text(dx=-15, fontSize=10, color="#94A6CC", angle=270)
                 .encode(x=date_x, y=alt.Y("zero:Q", axis=None, scale=shared_scale), text=alt.Text("date_label:O"))
             )
             line = (
@@ -1777,8 +1840,11 @@ with tab_progress:
                 .encode(x=date_x, y=alt.Y("plot_y:Q", axis=None, scale=shared_scale),
                         text=alt.Text("avg_accuracy:Q", format=".1f"))
             )
-            combo = alt.layer(bar, bar_labels, date_labels_layer, line, line_points, line_labels).properties(height=260)
-            st.altair_chart(combo, use_container_width=True)
+            combo = alt.layer(bar, bar_labels, date_labels_layer, line, line_points, line_labels).properties(
+                height=260, width=chart_width,
+            )
+            with st.container(key="progress_chart_scroll"):
+                st.altair_chart(combo, use_container_width=False)
 
             with st.container(key="progress_chart_legend"):
                 st.markdown(
@@ -1786,5 +1852,11 @@ with tab_progress:
                     "<span class='cl-row'><span class='cl-swatch-line'></span>Accuracy</span>",
                     unsafe_allow_html=True,
                 )
+        elif has_alltime_trend:
+            # Enough all-time data to have shown the toggle at all, just
+            # none of it falls within the currently-selected "Last 30
+            # days" window (e.g. a long break) - "quiz more" would be
+            # misleading advice here.
+            st.caption("No activity in the last 30 days - try \"All time\".")
         elif acc_trend or words_trend:
             st.caption("Quiz on a few more days to see a trend here.")

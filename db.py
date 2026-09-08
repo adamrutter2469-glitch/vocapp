@@ -19,6 +19,7 @@ DB file lives at vocab.duckdb, next to this script.
 """
 
 import random
+import threading
 import time
 import duckdb
 from pathlib import Path
@@ -51,6 +52,13 @@ _LEGACY_OWNER_EMAIL = "adamrutter2469@gmail.com"
 
 def _today_local():
     return datetime.now(LOCAL_TZ).date()
+
+
+def today_local():
+    """Public wrapper - app.py's Progress tab needs "today" (in the
+    app's one fixed timezone, see LOCAL_TZ above) to compute a "last 30
+    days" window, without reaching into this module's private helper."""
+    return _today_local()
 
 
 def _local_day_utc_bounds(day):
@@ -94,6 +102,21 @@ def _to_local_date(dt):
 _CONNECT_RETRIES = 5
 _CONNECT_RETRY_DELAY_SECONDS = 0.2
 
+# _ensure_schema's DDL only needs to actually run once per process -
+# guarded so it does, rather than re-running on every single
+# get_connection() call (previously every one, of which a single script
+# rerun triggers many - one per db.py function call). That mattered
+# because it's a real, reproducible crash, not just a theoretical one:
+# confirmed live, two concurrent Streamlit sessions in this one process
+# each opening their own connection and racing to run this DDL raised
+# `_duckdb.TransactionException: Catalog write-write conflict on alter
+# with "word_content"`. The lock's own double-checked-locking shape
+# (check, acquire, check again) is what keeps a second thread that was
+# already blocked on the lock from redundantly re-running the DDL the
+# first thread just finished, once it gets its turn.
+_schema_lock = threading.Lock()
+_schema_ready = False
+
 
 def get_connection():
     # No-op after the first call in this process (see r2_storage's own
@@ -115,6 +138,17 @@ def get_connection():
 
 
 def _ensure_schema(con):
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        _create_schema(con)
+        _schema_ready = True
+
+
+def _create_schema(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS word_content (
             word            TEXT PRIMARY KEY,
