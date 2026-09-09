@@ -402,46 +402,128 @@ st.markdown(
         margin-bottom: -0.425rem !important;
     }}
 
-    /* Header row: the logo overlays the top-right corner of the tabs
-       row instead of sitting above it in its own banner row. Tried
-       doing this with a real flex row first (tabs + logo as flex
-       siblings), but Streamlit gives every container's children
-       flex:1 1 0% / align-items:stretch by default for its normal
-       vertical stacking - flipping just header_row to row-direction
-       left that stretch behavior in place one level down, so the
-       logo's wrapper kept inflating to 100% width via a circular
-       auto-basis-vs-stretched-child loop. Absolute positioning sits
-       outside that whole flex system, so it sidesteps the fight
-       entirely: the tabs stay a normal untouched full-width block, and
-       the logo overlays on top, positioned purely by pixels. -58px is
-       (tab bar height 40px) - (logo height 98px), so the logo's
-       bottom edge lines up with the tabs' underline and it grows
-       upward into the header's blank space above, instead of downward
-       over the word card underneath. */
-    .st-key-header_row {{
-        position: relative;
+    /* Top bar: hamburger Menu button on the left, signed-in email +
+       Log out grouped together on the right - see .st-key-nav_sidebar
+       below for where the old tab bar/logo went. Plain flex row, not
+       st.columns - st.columns' own children default to flex:1 1 0% /
+       align-items:stretch, which fights arbitrary-width content like
+       buttons (this exact problem, and why a plain container's direct
+       children sidestep it, is documented at more length below on
+       .st-key-nav_sidebar and was originally worked out for the old
+       header_row this replaced). */
+    .st-key-top_bar {{
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 0.5rem;
     }}
-    .st-key-header_logo {{
-        position: absolute;
-        top: -58px;
-        right: 0;
-        z-index: 2;
-        /* Every st.container is width:100% of its parent by default
-           (that's a base Streamlit style, separate from the flex
-           stretching fought above) - still true once absolutely
-           positioned, which is why "right: 0" alone wasn't enough to
-           shrink this to the image's actual width. */
+    .st-key-top_bar_account {{
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 0.5rem;
+    }}
+    .st-key-top_bar_account [data-testid="stCaptionContainer"] {{
+        margin: 0;
+        white-space: nowrap;
+    }}
+    .st-key-top_bar button {{
+        white-space: nowrap;
+    }}
+
+    /* Left nav drawer (Quiz Me / Add Word / My Words / Progress) - only
+       actually rendered (see app.py) while st.session_state["nav_open"]
+       is True, so this CSS only has to style it, not hide/show it.
+       position:fixed makes it overlay the page rather than push
+       content over, which sidesteps needing real flex/grid page-level
+       layout just to make room for a collapsible column. */
+    .st-key-nav_sidebar {{
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 100vh;
+        /* 40% narrower than the original 240px. No horizontal padding
+           here at all (unlike the original, which had 1rem both
+           sides) - the nav buttons are meant to run edge-to-edge now,
+           so their padding has to come from somewhere that ISN'T a
+           shared ancestor of theirs; see .st-key-nav_header_row, which
+           adds its own left/right padding back just for the logo/✕
+           row instead. */
+        width: min(144px, 80vw);
+        background: #FFFFFF;
+        box-shadow: 2px 0 16px rgba(0, 29, 86, 0.18);
+        z-index: 3000;
+        /* Top padding well past 60px - Streamlit's own native toolbar
+           (Deploy/Stop/⋮) is a fixed-position element covering roughly
+           the page's top 60px with a z-index that beats content
+           underneath it (same issue worked out earlier for the
+           signed-in-as badge) - anything placed in that strip renders
+           fine but silently can't be clicked, confirmed live for the
+           ✕ close button before this fix (elementFromPoint at its own
+           coordinates returned the toolbar's Deploy button, not it).
+           64px is the minimum that clears it. */
+        padding-top: 64px;
+        overflow-y: auto;
+        /* Streamlit lays out a container's direct children (header
+           row, then each nav button) as a flex column with a real
+           `gap` property, not just per-child margins - confirmed live
+           earlier this session (account_row's DOM carried
+           direction="column" alongside an actual CSS gap). Zeroed out
+           entirely so the buttons stack with no space between them at
+           all - the header row still gets its own visual separation
+           from the button list via its own margin-bottom below. */
+        gap: 0;
+    }}
+    /* Logo + ✕ close button share one row - nestled together at the
+       very top of the drawer - instead of the close button sitting in
+       its own row above the logo. Both children need an explicit
+       fit-content width: Streamlit's own element wrappers default to
+       width:100% (block-level), which would otherwise make the FIRST
+       child (the logo) alone consume the whole row width - the exact
+       same issue already worked out once for the close button alone,
+       now applying to both children of this row. Its own left/right
+       padding replaces the sidebar's (removed above) - this row still
+       gets breathing room even though the buttons below it don't.
+       flex-start + a negative margin on the ✕ (below), not space-
+       between - the ✕ is meant to sit tucked into the logo's own
+       upper-right corner, slightly overlapping it, rather than pushed
+       all the way to the row's far edge - keeps the bigger logo from
+       needing a wider drawer just to leave room beside it. */
+    .st-key-nav_header_row {{
+        display: flex;
+        flex-direction: row;
+        justify-content: flex-start;
+        align-items: flex-start;
+        padding: 0 0.5rem;
+        margin-bottom: 0.75rem;
+    }}
+    .st-key-nav_header_row [data-testid="stElementContainer"] {{
         width: fit-content;
     }}
-    /* Below ~480px the 4 tab labels alone eat most of the row, and the
-       147px logo starts overlapping "Progress" - simplest fix is to
-       drop the logo on narrow screens rather than shrink it further
-       (it'd stop being recognizable). The tabs still work fine full-
-       width on their own without it. */
-    @media (max-width: 480px) {{
-        .st-key-header_logo {{
-            display: none;
-        }}
+    /* Pulls the ✕ left, over the logo's own top-right corner, instead
+       of sitting in its own clear space after it. */
+    .st-key-nav_header_row [data-testid="stButton"] {{
+        margin-left: -14px;
+    }}
+    /* Plain icon, not a bordered button box - no outline, no fill, no
+       hover/focus box-shadow ring (Streamlit's default focus style),
+       just the ✕ glyph itself. */
+    .st-key-nav_header_row [data-testid="stButton"] button {{
+        width: auto !important;
+        padding: 0;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }}
+    /* Nav buttons: full drawer width, touching (no gap - see the
+       sidebar's own gap:0 above), square corners - reads as one stack
+       of solid rectangles rather than a list of separate pill-shaped
+       buttons. */
+    .st-key-nav_sidebar [data-testid="stButton"] button {{
+        width: 100%;
+        justify-content: flex-start;
+        border-radius: 0;
     }}
 
     /* Progress tab: mastery donut. All of a card's content is written as
@@ -596,34 +678,6 @@ st.markdown(
         vertical-align: middle;
     }}
 
-    /* Signed-in-as row (auth.py) - pinned as a small fixed badge in the
-       top-right corner, OUTSIDE normal document flow. Deliberately not a
-       normal in-flow row: .st-key-header_logo (below) floats itself
-       upward via position:absolute + top:-58px relative to header_row,
-       assuming nothing else occupies the blank space above header_row -
-       an in-flow account_row would eat into exactly that space and the
-       logo would land on top of it (confirmed live). Taking account_row
-       out of flow entirely sidesteps that rather than fighting it. */
-    .st-key-account_row {{
-        position: fixed;
-        top: 68px;
-        right: 20px;
-        z-index: 1000;
-        width: max-content;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        gap: 0.5rem;
-    }}
-    .st-key-account_row [data-testid="stCaptionContainer"] {{
-        margin: 0;
-        white-space: nowrap;
-    }}
-    .st-key-account_row button {{
-        padding: 0.1rem 0.6rem;
-        font-size: 0.8rem;
-        white-space: nowrap;
-    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -641,15 +695,54 @@ st.markdown(
 # the one thing Streamlit actually guarantees is isolated per browser
 # session.
 st.session_state["user_id"] = auth.require_login()
-with st.container(key="account_row"):
-    st.caption(st.session_state["user_id"])
-    st.button("Log out", key="logout_btn", on_click=st.logout)
 
 
 def _uid() -> str:
     """This session's signed-in user's email - the id every db.py call
     below scopes its data by."""
     return st.session_state["user_id"]
+
+
+# Navigation: a Menu button in the top bar toggles a left-side drawer
+# (see .st-key-nav_sidebar CSS) listing the same 4 sections that used
+# to be st.tabs() - replaced because the ask was specifically for a
+# hamburger-menu drawer, not a tab bar. current_page drives which
+# section's code runs below (each former `with tab_x:` block is now
+# `if st.session_state["current_page"] == "X":`, otherwise unchanged -
+# a plain if still only executes the matching section's body, so the
+# old tabs' "inactive tab's code doesn't run" property carries over
+# for free, no elif chain needed).
+st.session_state.setdefault("current_page", "Quiz Me")
+st.session_state.setdefault("nav_open", False)
+_PAGES = ["Quiz Me", "Add Word", "My Words", "Progress"]
+
+
+def _toggle_nav():
+    st.session_state["nav_open"] = not st.session_state["nav_open"]
+
+
+def _select_page(page):
+    st.session_state["current_page"] = page
+    st.session_state["nav_open"] = False
+
+
+with st.container(key="top_bar"):
+    st.button("☰ Menu", key="menu_toggle_btn", on_click=_toggle_nav)
+    with st.container(key="top_bar_account"):
+        st.caption(st.session_state["user_id"])
+        st.button("Log out", key="logout_btn", on_click=st.logout)
+
+if st.session_state["nav_open"]:
+    with st.container(key="nav_sidebar"):
+        with st.container(key="nav_header_row"):
+            st.image(str(IMAGES_DIR / "vocapp_with_text.png"), width=104)
+            st.button("✕", key="nav_close_btn", on_click=_toggle_nav, help="Close menu")
+        for _page in _PAGES:
+            st.button(
+                _page, key=f"nav_btn_{_page}", on_click=_select_page, args=(_page,),
+                type="primary" if _page == st.session_state["current_page"] else "secondary",
+                use_container_width=True,
+            )
 
 def _definition_senses(definition: str) -> list[str]:
     """dictionary.py's lookup_word() joins up to 3 senses with "\n" -
@@ -679,42 +772,14 @@ if "quiz_schedule" not in st.session_state:
     st.session_state.quiz_schedule = None
 st.session_state.setdefault("quiz_form_version", 0)
 
-# Tabs and logo share one header row instead of the logo getting a full
-# banner row of its own above them - reclaims that row for quiz content.
-# Deliberately NOT st.columns here: every tab's content (Quiz Me, Add
-# Word, My Words, Progress - the whole app) lives inside the tabs
-# widget, so nesting st.tabs() itself inside a column would shrink
-# every tab's width down to that column's share, not just the tab bar.
-# Instead, tabs and the logo are two plain siblings inside header_row,
-# and CSS below turns that row into a flex row (see .st-key-header_row)
-# so the logo sits inline at the row's right edge without touching the
-# tabs' own width. The logo is sized to roughly half its old banner
-# height (147px wide, ~98px tall at its 1.5:1 aspect ratio).
-# key= + on_change="rerun" makes the active tab readable/settable via
-# st.session_state["main_tab"] - by default a tab has no such handle at
-# all. _run_lookup uses that to jump to Add Word on every "Look up"
-# click, from anywhere (Quiz Me's feedback words, Add Word's own
-# Thesaurus, wherever a clickable word shows up). As a side effect,
-# on_change="rerun" also makes every tab's body lazy - only the active
-# one actually runs each rerun - which is fine here: every session_state
-# default these tabs rely on is already initialized at module level,
-# outside any tab body (see the setdefault calls above/below), not
-# inside one, so nothing depends on an inactive tab's code having run.
-with st.container(key="header_row"):
-    tab_quiz, tab_add, tab_words, tab_progress = st.tabs(
-        ["Quiz Me", "Add Word", "My Words", "Progress"],
-        key="main_tab", on_change="rerun",
-    )
-    with st.container(key="header_logo"):
-        st.image(str(IMAGES_DIR / "vocapp_with_text.png"), width=147)
-
 # Word-lookup/add helpers and the clickable-word renderer live here, ahead
-# of every tab that uses them - Quiz Me (below) now renders clickable
+# of every page that uses them - Quiz Me (below) now renders clickable
 # definitions/synonyms/antonyms too, not just Add Word, and Quiz Me's
-# `with tab_quiz:` block runs earlier in the script than Add Word's own
-# section, so these need to be defined before Quiz Me, not between the
-# two (Streamlit re-runs this whole script top to bottom every time, so a
-# def appearing textually after its first call site would NameError).
+# `if current_page == "Quiz Me":` block runs earlier in the script than
+# Add Word's own section, so these need to be defined before Quiz Me,
+# not between the two (Streamlit re-runs this whole script top to
+# bottom every time, so a def appearing textually after its first call
+# site would NameError).
 
 # Streamlit gotcha: popping a keyed widget's session_state entry does NOT
 # reliably reset that widget on the next run - the frontend can keep
@@ -744,15 +809,14 @@ _MSG_ICONS = {"success": "✅", "warning": "⚠️", "error": "🚫"}
 
 
 def _set_msg(kind, text):
-    # st.toast() instead of an inline st.success/warning/error box: those
-    # boxes lived inside tab_add's own render, and Streamlit keeps every
-    # tab's last-rendered content sitting in the DOM (just hidden) when
-    # you switch tabs - switching tabs doesn't rerun the script, so an
-    # inline box stayed frozen on screen showing stale text ("Added
-    # zephyr") no matter how long you'd been on a different tab, until
-    # some unrelated interaction happened to trigger a rerun. A toast
-    # renders as a top-right overlay outside any tab's DOM and auto-
-    # dismisses on its own after a few seconds, so it can't get stuck
+    # st.toast() instead of an inline st.success/warning/error box:
+    # under the old tabs-based nav, an inline box on Add Word's page
+    # stayed frozen in the (hidden but still-rendered) DOM showing
+    # stale text ("Added zephyr") no matter how long you'd since
+    # switched tabs, since switching tabs didn't rerun the script. A
+    # toast renders as a top-right overlay outside any page's own DOM
+    # and auto-dismisses on its own after a few seconds, so it can't
+    # get stuck that way regardless of how navigation happens to work.
     # like that.
     st.toast(text, icon=_MSG_ICONS.get(kind))
 
@@ -763,11 +827,11 @@ def _run_lookup(word):
     _render_clickable_text/_do_lookup_word)."""
     # Always land on Add Word - whether this lookup was triggered from
     # its own search box, a synonym click while already there, or a
-    # word clicked in Quiz Me's feedback (a different top-level tab
-    # entirely). Set unconditionally, before the lookup even resolves,
-    # so a failed lookup's warning/error toast is also seen on the page
-    # that's about to display it, not wherever the click happened to be.
-    st.session_state["main_tab"] = "Add Word"
+    # word clicked in Quiz Me's feedback (a different page entirely).
+    # Set unconditionally, before the lookup even resolves, so a failed
+    # lookup's warning/error toast is also seen on the page that's
+    # about to display it, not wherever the click happened to be.
+    st.session_state["current_page"] = "Add Word"
     try:
         info = dictionary.lookup_word(word)
         st.session_state["addword_result"] = info
@@ -978,7 +1042,7 @@ def _render_grading_feedback(feedback: str):
 # ------------------------------------------------------------
 # Quiz Me
 # ------------------------------------------------------------
-with tab_quiz:
+if st.session_state["current_page"] == "Quiz Me":
     if st.session_state.quiz_word is None:
         w = db.next_due_word(_uid())
         if w is not None:
@@ -1140,7 +1204,7 @@ with tab_quiz:
 # of the tab stays blank until a lookup - via the book button, or a
 # synonym chip - actually succeeds; addword_result holds that lookup's
 # data and is what "Add" saves.
-with tab_add:
+if st.session_state["current_page"] == "Add Word":
     # No title - the tab label ("Add Word") already says what this is,
     # and this row is the first thing on the tab now instead of sitting
     # below one. Same toolbar-row pattern as My Words' filter/search row
@@ -1175,13 +1239,11 @@ with tab_add:
             # Everything past the word header splits into sub-tabs
             # instead of one long scroll - Definition (senses + usage
             # examples), Thesaurus (synonyms/antonyms), Advanced (usage
-            # trend + etymology). Nesting st.tabs() here is safe in a
-            # way nesting st.columns() around the *outer* Quiz
-            # Me/Add Word/... tabs wasn't (see header_row's comment,
-            # much earlier in this file) - that problem was specifically
-            # about squeezing st.tabs() itself inside a column, which
-            # drags every tab PANEL's width down with it; a plain
-            # container like this one doesn't have that issue.
+            # trend + etymology). st.tabs() nested inside a plain
+            # container like this one is fine - the problem elsewhere in
+            # this file was specifically squeezing st.tabs() inside an
+            # st.columns() column, which drags every tab PANEL's width
+            # down with it; a plain container doesn't have that issue.
             #
             # key + on_change="rerun" is what makes the active tab
             # readable/settable via st.session_state["addword_subtab"]
@@ -1446,7 +1508,7 @@ def _do_single_delete(word):
     st.session_state.pop(f"sel_{word}", None)
 
 
-with tab_words:
+if st.session_state["current_page"] == "My Words":
     all_words = db.get_all_words(_uid())
     if not all_words:
         st.info("No words yet.")
@@ -1598,7 +1660,7 @@ with tab_words:
 # ------------------------------------------------------------
 # Progress
 # ------------------------------------------------------------
-with tab_progress:
+if st.session_state["current_page"] == "Progress":
     stats = db.get_progress_stats(_uid())
     if stats["total"] == 0:
         st.info("No words yet.")
