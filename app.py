@@ -402,34 +402,107 @@ st.markdown(
         margin-bottom: -0.425rem !important;
     }}
 
-    /* Top bar: hamburger Menu button on the left, signed-in email +
-       Log out grouped together on the right - see .st-key-nav_sidebar
+    /* Top bar: Menu icon on the left, identity (alias or email)
+       centered, Log out icon on the right - see .st-key-nav_sidebar
        below for where the old tab bar/logo went. Plain flex row, not
        st.columns - st.columns' own children default to flex:1 1 0% /
        align-items:stretch, which fights arbitrary-width content like
        buttons (this exact problem, and why a plain container's direct
        children sidestep it, is documented at more length below on
        .st-key-nav_sidebar and was originally worked out for the old
-       header_row this replaced). */
+       header_row this replaced). position:relative + the identity
+       block's own position:absolute (below) is what gets it TRULY
+       centered on the bar regardless of the Menu/Log out icons'
+       widths, rather than just "centered in whatever space is left
+       over" the way a 3-way justify-content split would - the same
+       centering approach already worked out for the drawer's own logo. */
     .st-key-top_bar {{
+        position: relative;
         display: flex;
         flex-direction: row;
         align-items: center;
         justify-content: space-between;
         margin-bottom: 0.5rem;
+        /* Same blue as a primary button (e.g. Submit) - confirmed live
+           via getComputedStyle, not eyeballed, since "primaryColor" in
+           .streamlit/config.toml (#0270FE) is a theme token Streamlit
+           applies through its own internal styling, not something this
+           file's own CSS can just reference by name. */
+        background-color: #0270FE;
+        /* 0.42rem, not the original 0.6rem - measured live (59.2px
+           tall beforehand) and picked to land the bar's total height
+           at ~90% of that, not just an eyeballed smaller number.
+           Square corners now, not the 8px this started with. */
+        padding: 0.42rem 1rem;
+        border-radius: 0;
     }}
-    .st-key-top_bar_account {{
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        gap: 0.5rem;
+    .st-key-top_bar_identity {{
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        /* Without this, the container stays Streamlit's default
+           width:100% (same width as top_bar itself) - translateX(-50%)
+           then centers that full-width BOX, which does nothing
+           visible, and the caption text inside still reads as flush
+           left (confirmed live). Centering has to be based on the
+           text's own real width, not the row's. */
+        width: fit-content;
     }}
-    .st-key-top_bar_account [data-testid="stCaptionContainer"] {{
+    .st-key-top_bar_identity [data-testid="stCaptionContainer"] {{
         margin: 0;
         white-space: nowrap;
+        /* White, readable against the bar's own blue fill - Streamlit's
+           caption styling otherwise sets its own muted grey via a more
+           specific rule, hence !important. 17px is 14px (this
+           caption's own previous size, measured live) + ~20%. */
+        color: #FFFFFF !important;
+        font-size: 17px;
     }}
-    .st-key-top_bar button {{
-        white-space: nowrap;
+    /* font-weight specifically needs the nested <p>, not just its
+       wrapper above - same "the real text lives one level deeper, with
+       its own competing style" issue already hit (and fixed the same
+       way) on the Menu/Log out buttons' own labels. */
+    .st-key-top_bar_identity [data-testid="stCaptionContainer"] p {{
+        font-weight: 700 !important;
+    }}
+    /* Menu: plain white icon, not a bordered button box - same
+       transparent-background treatment as the drawer's own ✕ close
+       icon, so the bar's own blue fill (above) shows through. Text
+       label ("Navigation") and Log out's own text were both tried and
+       then dropped again - icon-only for both, back to how this
+       started. */
+    .st-key-menu_toggle_btn button {{
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        color: #FFFFFF;
+        font-size: 1.3rem;
+        padding: 0.2rem 0.4rem;
+    }}
+    /* Log out: the inline SVG "door with an exit arrow" icon (the
+       standard logout glyph, e.g. Feather/Lucide's own "log-out" icon)
+       as a background-image, not the 🚪 door EMOJI first tried here -
+       that rendered as a plain placeholder box (confirmed live, even
+       on this Windows-flagged browser), a real risk of the same
+       failure for at least some viewers rather than a guaranteed
+       cross-platform glyph. An SVG baked directly into the CSS doesn't
+       depend on any emoji font being installed at all. The button's
+       own text ("Logout") stays in the DOM for accessibility - only
+       hidden visually (color:transparent), not removed. */
+    .st-key-logout_btn button {{
+        background-color: transparent !important;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4'/><polyline points='16 17 21 12 16 7'/><line x1='21' y1='12' x2='9' y2='12'/></svg>");
+        background-repeat: no-repeat;
+        background-position: center;
+        background-size: 20px 20px;
+        border: none !important;
+        box-shadow: none !important;
+        color: transparent;
+        width: 32px;
+        min-width: 0 !important;
+        height: 32px;
+        padding: 0;
     }}
 
     /* Left nav drawer (Quiz Me / Add Word / My Words / Progress) - only
@@ -475,36 +548,101 @@ st.markdown(
            from the button list via its own margin-bottom below. */
         gap: 0;
     }}
-    /* Logo + ✕ close button share one row - nestled together at the
-       very top of the drawer - instead of the close button sitting in
-       its own row above the logo. Both children need an explicit
-       fit-content width: Streamlit's own element wrappers default to
-       width:100% (block-level), which would otherwise make the FIRST
-       child (the logo) alone consume the whole row width - the exact
-       same issue already worked out once for the close button alone,
-       now applying to both children of this row. Its own left/right
-       padding replaces the sidebar's (removed above) - this row still
-       gets breathing room even though the buttons below it don't.
-       flex-start + a negative margin on the ✕ (below), not space-
-       between - the ✕ is meant to sit tucked into the logo's own
-       upper-right corner, slightly overlapping it, rather than pushed
-       all the way to the row's far edge - keeps the bigger logo from
-       needing a wider drawer just to leave room beside it. */
+    /* Logo + ✕ close button share one row at the very top of the
+       drawer. The logo is centered on the row's own full width; the ✕
+       is taken out of that flex flow entirely (position:absolute) and
+       pinned to the row's top-right corner instead, so the two are
+       positioned completely independently - centering the logo no
+       longer has to also account for the ✕ sitting beside it, and the
+       ✕ can end up sitting slightly on top of the logo (allowed,
+       expected even) once the logo's big enough to reach that corner
+       itself. position:relative on the row is what gives the ✕'s
+       position:absolute something to measure "top-right" against. */
     .st-key-nav_header_row {{
+        position: relative;
         display: flex;
+        /* Explicit, not left to default - a Streamlit vertical block
+           (which this is, like every st.container) defaults to
+           flex-direction:column, not row. Leaving it unset here had
+           the image and the close button's own container stacking
+           vertically instead of sharing one row - invisibly, since
+           the close button is position:absolute and the image alone
+           still looked right, but it meant the (zero-height, see
+           .st-key-nav_close_btn) second "row" was still a real flex
+           item with Streamlit's own default column gap above it,
+           padding out this row's own height by that gap for no
+           visible reason. */
         flex-direction: row;
-        justify-content: flex-start;
-        align-items: flex-start;
+        /* Same default-gap gotcha as the flex-direction one above, just
+           on the other axis now that it's row - Streamlit's own
+           vertical-block base style carries a real gap (~16px, matches
+           the sidebar's own default that .st-key-nav_sidebar already
+           zeroes out below), not just flex-direction. Left unset here,
+           it still applied between the image and the ✕'s own
+           container even at width:0 (a gap sits between flex items
+           regardless of their own size), throwing the "center" in
+           justify-content:center off by half that gap (confirmed live:
+           the logo rendered measurably left of the drawer's true
+           center). */
+        gap: 0;
+        justify-content: center;
         padding: 0 0.5rem;
-        margin-bottom: 0.75rem;
+        margin-bottom: 0.25rem;
     }}
+    /* margin-bottom:0 kills a ~16px default bottom margin Streamlit
+       puts on an element's own wrapper (confirmed live - the image's
+       real rendered height and this row's own box height didn't
+       match, and that gap was extra dead space stacking on top of
+       this row's own margin-bottom above). flex-shrink:0 stops the
+       logo from being squeezed narrower than its own requested width
+       (confirmed live: it was rendering at 96px against a requested
+       125px) to make room for its row-sibling, the ✕'s own container -
+       which has no visible content of its own to need any width for
+       (see .st-key-nav_close_btn) but still carried Streamlit's own
+       default non-zero min-width as a flex item, shrinking the flex-
+       basis:auto logo to compensate. */
     .st-key-nav_header_row [data-testid="stElementContainer"] {{
         width: fit-content;
+        margin-bottom: 0;
+        flex-shrink: 0;
     }}
-    /* Pulls the ✕ left, over the logo's own top-right corner, instead
-       of sitting in its own clear space after it. */
+    /* Streamlit gives every element's own stElementContainer wrapper
+       position:relative by default (confirmed live - that's what
+       .st-key-nav_close_btn, the wrapper Streamlit names after the
+       button's own key, already had) - left alone, THAT becomes the
+       nearest positioned ancestor for position:absolute below instead
+       of this row, which is why the ✕ first ended up positioned
+       against its own tiny wrapper (landing near the row's top-left,
+       nowhere near "top-right of the header row" as intended). Forcing
+       it back to static is what makes .st-key-nav_header_row's own
+       position:relative the one that counts. */
+    .st-key-nav_close_btn {{
+        position: static !important;
+        /* Its own content is what's position:absolute (below), which
+           doesn't contribute to a static parent's auto height - but
+           the parent itself still collapses to a default ~16px single-
+           line height rather than truly 0 (confirmed live: that 16px
+           was still padding out the header row's own bottom, on top
+           of the row's own margin-bottom, even after that margin was
+           already cut down). Zeroing it out here removes the last of
+           it; overflow:visible keeps the ✕ (rendered well outside this
+           now-zero-height box) from getting clipped. */
+        height: 0;
+        width: 0;
+        /* width:0 alone wasn't enough (confirmed live: Streamlit's own
+           base style puts a 16px min-width on this same kind of
+           wrapper - already documented elsewhere in this file, for the
+           single-letter-word buttons - and min-width silently wins
+           over a smaller explicit width per the CSS spec). That
+           leftover 16px was exactly what was still throwing off the
+           logo's centering above. */
+        min-width: 0;
+        overflow: visible;
+    }}
     .st-key-nav_header_row [data-testid="stButton"] {{
-        margin-left: -14px;
+        position: absolute;
+        top: 0;
+        right: 0.5rem;
     }}
     /* Plain icon, not a bordered button box - no outline, no fill, no
        hover/focus box-shadow ring (Streamlit's default focus style),
@@ -524,6 +662,17 @@ st.markdown(
         width: 100%;
         justify-content: flex-start;
         border-radius: 0;
+    }}
+
+    /* About page: a bounded, independently-scrolling box for the plain-
+       text summary, rather than just however tall the page happens to
+       run. */
+    .st-key-about_scroll {{
+        max-height: 55vh;
+        overflow-y: auto;
+        border: 1px solid rgba(0, 29, 86, 0.15);
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
     }}
 
     /* Progress tab: mastery donut. All of a card's content is written as
@@ -715,6 +864,10 @@ def _uid() -> str:
 st.session_state.setdefault("current_page", "Quiz Me")
 st.session_state.setdefault("nav_open", False)
 _PAGES = ["Quiz Me", "Add Word", "My Words", "Progress"]
+# Account/meta pages - listed at the bottom of the drawer, visually set
+# apart from the 4 core pages above by a divider (see the drawer's own
+# render below), not mixed into the same button stack.
+_UTILITY_PAGES = ["Settings", "About", "App Ideas"]
 
 
 def _toggle_nav():
@@ -726,18 +879,43 @@ def _select_page(page):
     st.session_state["nav_open"] = False
 
 
+def _display_identity() -> str:
+    """The Settings-page alias, if the user's set one - otherwise their
+    email. Checked on every rerun (one cheap query) rather than cached,
+    so saving a new alias in Settings is reflected here immediately."""
+    alias = db.get_user_settings(_uid())["alias"]
+    return alias if alias else st.session_state["user_id"]
+
+
 with st.container(key="top_bar"):
-    st.button("☰ Menu", key="menu_toggle_btn", on_click=_toggle_nav)
-    with st.container(key="top_bar_account"):
-        st.caption(st.session_state["user_id"])
-        st.button("Log out", key="logout_btn", on_click=st.logout)
+    st.button("☰", key="menu_toggle_btn", on_click=_toggle_nav)
+    with st.container(key="top_bar_identity"):
+        st.caption(f"Welcome {_display_identity()}!")
+    st.button("Logout", key="logout_btn", on_click=st.logout)
 
 if st.session_state["nav_open"]:
     with st.container(key="nav_sidebar"):
         with st.container(key="nav_header_row"):
-            st.image(str(IMAGES_DIR / "vocapp_with_text.png"), width=104)
+            st.image(str(IMAGES_DIR / "vocapp_with_text.png"), width=125)
             st.button("✕", key="nav_close_btn", on_click=_toggle_nav, help="Close menu")
         for _page in _PAGES:
+            st.button(
+                _page, key=f"nav_btn_{_page}", on_click=_select_page, args=(_page,),
+                type="primary" if _page == st.session_state["current_page"] else "secondary",
+                use_container_width=True,
+            )
+        # Zero margin, not the small gap this had before - the ask was
+        # for the utility pages to line up flush with the core 4, same
+        # as they already do with each other (sidebar's gap:0 already
+        # handles that between buttons; this hr is the one other direct
+        # child of that flex column, so its own margin was the actual
+        # source of the visible gap above Settings).
+        st.markdown(
+            "<hr style='margin: 0; border: none; "
+            "border-top: 1px solid rgba(0, 29, 86, 0.15);'>",
+            unsafe_allow_html=True,
+        )
+        for _page in _UTILITY_PAGES:
             st.button(
                 _page, key=f"nav_btn_{_page}", on_click=_select_page, args=(_page,),
                 type="primary" if _page == st.session_state["current_page"] else "secondary",
@@ -1746,18 +1924,18 @@ if st.session_state["current_page"] == "Progress":
         if has_alltime_trend:
             st.subheader("Accuracy over time")
 
-            # Defaults to the last 30 days - the full history eventually
-            # produces enough bars that a fixed per-bar width (see
-            # chart_width below) would need real horizontal scrolling to
-            # stay readable; 30 days is the common case that still fits
-            # without it, with "All time" one click away.
-            st.session_state.setdefault("progress_chart_range", "Last 30 days")
+            # Defaults to a rolling last 3 weeks - the full history
+            # eventually produces enough bars that a fixed per-bar width
+            # (see chart_width below) would need real horizontal
+            # scrolling to stay readable; 3 weeks is the common case
+            # that still fits without it, with "All time" one click away.
+            st.session_state.setdefault("progress_chart_range", "Last 3 weeks")
             st.radio(
-                "Date range", ["Last 30 days", "All time"], key="progress_chart_range",
+                "Date range", ["Last 3 weeks", "All time"], key="progress_chart_range",
                 horizontal=True, label_visibility="collapsed",
             )
-            if st.session_state["progress_chart_range"] == "Last 30 days":
-                cutoff = db.today_local() - timedelta(days=29)
+            if st.session_state["progress_chart_range"] == "Last 3 weeks":
+                cutoff = db.today_local() - timedelta(days=20)
                 acc_trend = [(d, v) for d, v in acc_trend if d >= cutoff]
                 words_trend = [(d, v) for d, v in words_trend if d >= cutoff]
 
@@ -1775,24 +1953,25 @@ if st.session_state["current_page"] == "Progress":
             # buckets - so ordinal sidesteps the whole tick-interval
             # question: exactly one tick per actual date, always.
             date_order = sorted(set(acc_df["date"]) | set(words_df["date"]))
-            # Per-bar step: 30 bars (the default "Last 30 days" view)
-            # would exactly fill the chart's real measured width
-            # (PROGRESS_CHART_WIDTH_PX, from .st-key-progress_chart_scroll's
-            # getBoundingClientRect - Streamlit's centered layout caps it
-            # there regardless of viewport size) at zero gap - then
-            # narrowed another 30% on top of that per its own ask, still
-            # touching edge to edge (the darker fill's own stroke outline
-            # is what keeps adjacent bars visually separable - see
-            # mark_bar below). Net effect: the default view no longer
-            # fills the full width edge to edge (some blank space on the
-            # right instead) - an accepted trade-off for bars this much
-            # narrower being possible at all. Beyond 30 days ("All time"
-            # with a longer history), the chart keeps growing at the same
-            # per-bar step instead of cramming more bars into a fixed
-            # width, and .st-key-progress_chart_scroll's overflow-x
-            # handles the rest.
+            # Per-bar step: DEFAULT_WINDOW_DAYS bars (the default "Last
+            # 3 weeks" view) would exactly fill the chart's real
+            # measured width (PROGRESS_CHART_WIDTH_PX, from
+            # .st-key-progress_chart_scroll's getBoundingClientRect -
+            # Streamlit's centered layout caps it there regardless of
+            # viewport size) at zero gap - then narrowed another 30% on
+            # top of that per its own ask, still touching edge to edge
+            # (the darker fill's own stroke outline is what keeps
+            # adjacent bars visually separable - see mark_bar below).
+            # Net effect: the default view no longer fills the full
+            # width edge to edge (some blank space on the right instead)
+            # - an accepted trade-off for bars this much narrower being
+            # possible at all. Beyond 3 weeks ("All time" with a longer
+            # history), the chart keeps growing at the same per-bar step
+            # instead of cramming more bars into a fixed width, and
+            # .st-key-progress_chart_scroll's overflow-x handles the
+            # rest.
             PROGRESS_CHART_WIDTH_PX = 704
-            DEFAULT_WINDOW_DAYS = 30
+            DEFAULT_WINDOW_DAYS = 21
             BAR_STEP_PX = (PROGRESS_CHART_WIDTH_PX / DEFAULT_WINDOW_DAYS) * 0.7
             MIN_CHART_WIDTH_PX = 300
             chart_width = max(MIN_CHART_WIDTH_PX, len(date_order) * BAR_STEP_PX)
@@ -1888,7 +2067,7 @@ if st.session_state["current_page"] == "Progress":
                     x=date_x,
                     y=alt.Y("plot_y:Q", axis=None, scale=shared_scale),
                     tooltip=[alt.Tooltip("date_label:O", title="Date"),
-                             alt.Tooltip("avg_accuracy:Q", title="Accuracy", format=".1f")],
+                             alt.Tooltip("avg_accuracy:Q", title="Accuracy %", format=".0f")],
                 )
             )
             line_points = (
@@ -1900,7 +2079,7 @@ if st.session_state["current_page"] == "Progress":
                 alt.Chart(acc_df)
                 .mark_text(dy=-10, fontWeight="bold", fontSize=11, color="#0270FE")
                 .encode(x=date_x, y=alt.Y("plot_y:Q", axis=None, scale=shared_scale),
-                        text=alt.Text("avg_accuracy:Q", format=".1f"))
+                        text=alt.Text("avg_accuracy:Q", format=".0f"))
             )
             combo = alt.layer(bar, bar_labels, date_labels_layer, line, line_points, line_labels).properties(
                 height=260, width=chart_width,
@@ -1911,14 +2090,134 @@ if st.session_state["current_page"] == "Progress":
             with st.container(key="progress_chart_legend"):
                 st.markdown(
                     "<span class='cl-row'><span class='cl-swatch-bar'></span>Words quizzed</span>"
-                    "<span class='cl-row'><span class='cl-swatch-line'></span>Accuracy</span>",
+                    "<span class='cl-row'><span class='cl-swatch-line'></span>Accuracy %</span>",
                     unsafe_allow_html=True,
                 )
         elif has_alltime_trend:
             # Enough all-time data to have shown the toggle at all, just
-            # none of it falls within the currently-selected "Last 30
-            # days" window (e.g. a long break) - "quiz more" would be
+            # none of it falls within the currently-selected "Last 3
+            # weeks" window (e.g. a long break) - "quiz more" would be
             # misleading advice here.
-            st.caption("No activity in the last 30 days - try \"All time\".")
+            st.caption("No activity in the last 3 weeks - try \"All time\".")
         elif acc_trend or words_trend:
             st.caption("Quiz on a few more days to see a trend here.")
+
+# ------------------------------------------------------------
+# Settings
+# ------------------------------------------------------------
+# Per-user preferences (db.user_settings) - alias is purely cosmetic
+# for now (not shown anywhere else yet); the two Yes/No toggles are
+# storage-only today, ahead of the features they'll actually gate
+# (a shared community word list, and letting other users see your
+# progress) - see each one's own caption below.
+if st.session_state["current_page"] == "Settings":
+    st.subheader("Settings")
+    _settings = db.get_user_settings(_uid())
+    st.session_state.setdefault("settings_alias", _settings["alias"])
+    st.session_state.setdefault(
+        "settings_auto_add", "Yes" if _settings["auto_add_community_words"] else "No"
+    )
+    st.session_state.setdefault(
+        "settings_share_progress", "Yes" if _settings["share_progress"] else "No"
+    )
+
+    st.text_input(
+        "Alias", key="settings_alias", max_chars=10,
+        help="A short display name, 10 characters max.",
+    )
+    st.selectbox("Auto-Add Community Words", ["No", "Yes"], key="settings_auto_add")
+    st.caption("Automatically add new words other users add to your own list.")
+    st.selectbox("Share My Progress", ["No", "Yes"], key="settings_share_progress")
+    st.caption("Let other users see your accuracy and streak.")
+
+    if st.button("Save Settings", type="primary"):
+        db.save_user_settings(
+            _uid(),
+            st.session_state["settings_alias"],
+            st.session_state["settings_auto_add"] == "Yes",
+            st.session_state["settings_share_progress"] == "Yes",
+        )
+        st.toast("Settings saved.", icon="✅")
+
+# ------------------------------------------------------------
+# About
+# ------------------------------------------------------------
+if st.session_state["current_page"] == "About":
+    st.subheader("About vocapp")
+    with st.container(key="about_scroll"):
+        st.markdown(
+            """
+**Quiz Me** — Your daily practice queue. The app serves a word that's
+due for review under a spaced-repetition schedule: type your own
+definition from memory, get it graded, and see exactly what you got
+right and missed. Answer well and a word's next review stretches
+further out; miss it and it comes back sooner.
+
+**Add Word** — Look up any word to see its definition, part of speech,
+pronunciation, synonyms and antonyms, real usage examples, etymology,
+and how its usage has trended over time - then add it to your list
+with one click.
+
+**My Words** — Every word you've added, with your accuracy history and
+next review date, plus search, sort, and filter tools. Delete words
+you no longer want to study.
+
+**Progress** — Your overall stats at a glance: how many words are
+Mastered, Learning, or Needs Work, your quiz streak, and a chart of
+your daily accuracy and quiz volume over time.
+
+**Settings** — Personalize your account: a short display alias, and
+preferences for community word sharing and progress visibility.
+
+**App Ideas** — Have a suggestion? Type it here. Every idea is saved
+and reviewed to help decide what to build next.
+            """
+        )
+
+# ------------------------------------------------------------
+# App Ideas
+# ------------------------------------------------------------
+# Free-text suggestions, saved per user (db.app_ideas) - reviewed
+# centrally (see the owner-only section below) to help decide what to
+# build next, rather than needing a separate feedback channel.
+if st.session_state["current_page"] == "App Ideas":
+    st.subheader("App Ideas")
+    st.caption("Have a suggestion for the app? Type it below - every idea gets reviewed.")
+
+    st.session_state.setdefault("app_idea_version", 0)
+    # Versioned key, not a plain one cleared via session_state after
+    # submit - popping/reassigning an already-instantiated widget's key
+    # doesn't reliably reset it in Streamlit (same gotcha this file's
+    # form-clearing logic elsewhere already works around); a fresh key
+    # after each submit is what actually guarantees an empty box.
+    _idea_key = f"app_idea_draft_{st.session_state['app_idea_version']}"
+    st.text_area(
+        "Your idea", key=_idea_key, label_visibility="collapsed",
+        placeholder='e.g. "Add a dark mode" or "Let me filter by part of speech"',
+    )
+    if st.button("Submit Idea", type="primary"):
+        _idea_text = st.session_state[_idea_key].strip()
+        if _idea_text:
+            db.add_app_idea(_uid(), _idea_text)
+            st.session_state["app_idea_version"] += 1
+            st.toast("Thanks! Your idea has been submitted.", icon="✅")
+            st.rerun()
+        else:
+            st.warning("Type something first.")
+
+    _my_ideas = db.get_app_ideas(_uid())
+    if _my_ideas:
+        st.markdown("**Your submitted ideas**")
+        for _idea in _my_ideas:
+            st.markdown(f"- {_idea['submitted_at']:%b %d, %Y}: {_idea['idea_text']}")
+
+    # Owner-only: every user's ideas in one place, so reviewing them
+    # doesn't require going around the app to query the database
+    # directly.
+    if _uid() == db._LEGACY_OWNER_EMAIL:
+        with st.expander("All submitted ideas (owner view)"):
+            _all_ideas = db.get_all_app_ideas()
+            if not _all_ideas:
+                st.caption("No ideas submitted yet.")
+            for _idea in _all_ideas:
+                st.markdown(f"- **{_idea['user_id']}** ({_idea['submitted_at']:%b %d, %Y}): {_idea['idea_text']}")

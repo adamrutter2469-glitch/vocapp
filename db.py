@@ -188,6 +188,30 @@ def _create_schema(con):
             note          TEXT
         )
     """)
+    # One row per user - the Settings page (see app.py). alias is
+    # capped at 10 chars by the UI's max_chars, not enforced here too -
+    # this table isn't touched by anything else that could put a longer
+    # value in it. auto_add_community_words/share_progress are plain
+    # settings storage only, for now - neither one has an actual effect
+    # yet (auto-adding from a shared community word list, and a way for
+    # others to see your progress, are both still-unbuilt features).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id                   TEXT PRIMARY KEY,
+            alias                     TEXT,
+            auto_add_community_words  BOOLEAN DEFAULT FALSE,
+            share_progress            BOOLEAN DEFAULT FALSE
+        )
+    """)
+    con.execute("CREATE SEQUENCE IF NOT EXISTS app_idea_id_seq START 1")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS app_ideas (
+            id            INTEGER PRIMARY KEY DEFAULT nextval('app_idea_id_seq'),
+            user_id       TEXT NOT NULL,
+            idea_text     TEXT NOT NULL,
+            submitted_at  TIMESTAMP NOT NULL
+        )
+    """)
     _migrate_legacy_single_user_schema(con)
 
 
@@ -683,3 +707,71 @@ def get_attempts(user_id: str, word: str):
         }
         for r in rows
     ]
+
+
+def get_user_settings(user_id: str) -> dict:
+    """This user's saved Settings-page preferences. Defaults (blank
+    alias, both toggles off) for a user who's never saved any yet,
+    rather than None/crashing - Settings' own UI relies on always
+    getting a real dict back."""
+    con = get_connection()
+    row = con.execute(
+        "SELECT alias, auto_add_community_words, share_progress FROM user_settings WHERE user_id = ?",
+        [user_id],
+    ).fetchone()
+    con.close()
+    if row is None:
+        return {"alias": "", "auto_add_community_words": False, "share_progress": False}
+    return {"alias": row[0] or "", "auto_add_community_words": bool(row[1]), "share_progress": bool(row[2])}
+
+
+def save_user_settings(user_id: str, alias: str, auto_add_community_words: bool, share_progress: bool):
+    con = get_connection()
+    con.execute(
+        """
+        INSERT INTO user_settings (user_id, alias, auto_add_community_words, share_progress)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (user_id) DO UPDATE SET
+            alias = EXCLUDED.alias,
+            auto_add_community_words = EXCLUDED.auto_add_community_words,
+            share_progress = EXCLUDED.share_progress
+        """,
+        [user_id, alias.strip()[:10], auto_add_community_words, share_progress],
+    )
+    con.close()
+    r2_storage.upload_db()
+
+
+def add_app_idea(user_id: str, idea_text: str):
+    con = get_connection()
+    con.execute(
+        "INSERT INTO app_ideas (user_id, idea_text, submitted_at) VALUES (?, ?, ?)",
+        [user_id, idea_text.strip(), datetime.now(timezone.utc)],
+    )
+    con.close()
+    r2_storage.upload_db()
+
+
+def get_app_ideas(user_id: str) -> list[dict]:
+    """This user's own submitted ideas, newest first - shown back to
+    them on the App Ideas page so they can see what they've already
+    suggested."""
+    con = get_connection()
+    rows = con.execute(
+        "SELECT idea_text, submitted_at FROM app_ideas WHERE user_id = ? ORDER BY submitted_at DESC",
+        [user_id],
+    ).fetchall()
+    con.close()
+    return [{"idea_text": r[0], "submitted_at": r[1]} for r in rows]
+
+
+def get_all_app_ideas() -> list[dict]:
+    """Every user's submitted ideas, newest first - for the owner-only
+    review section of the App Ideas page (see app.py), so ideas can be
+    reviewed centrally without needing a separate admin tool."""
+    con = get_connection()
+    rows = con.execute(
+        "SELECT user_id, idea_text, submitted_at FROM app_ideas ORDER BY submitted_at DESC"
+    ).fetchall()
+    con.close()
+    return [{"user_id": r[0], "idea_text": r[1], "submitted_at": r[2]} for r in rows]
