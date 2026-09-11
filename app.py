@@ -1823,17 +1823,19 @@ if st.session_state["current_page"] == "Progress":
                     unsafe_allow_html=True,
                 )
         with c_stats:
-            # 10+ words/day, per the "consecutive days with at least 10
-            # words quizzed" ask - see db.get_quiz_streak's docstring for
-            # exactly how today's still-in-progress count is handled.
-            streak = db.get_quiz_streak(_uid(), threshold=10)
+            # Threshold is user-editable now (Settings' Daily Word
+            # Target), not a flat 10 - see db.get_quiz_streak's
+            # docstring for exactly how today's still-in-progress count
+            # is handled.
+            daily_target = db.get_user_settings(_uid())["daily_word_target"]
+            streak = db.get_quiz_streak(_uid(), threshold=daily_target)
             with st.container(key="progress_streak_card"):
                 st.markdown(
                     "<span class='stat-top'>"
                     "<span class='stat-icon'>🔥</span>"
                     f"<span class='stat-value'>{streak}</span>"
                     "</span>"
-                    "<span class='stat-label'>Day streak (10+ words/day)</span>",
+                    f"<span class='stat-label'>Day streak ({daily_target}+ words/day)</span>",
                     unsafe_allow_html=True,
                 )
             if stats["overall_avg"] is not None:
@@ -2055,6 +2057,7 @@ if st.session_state["current_page"] == "Settings":
     st.session_state.setdefault(
         "settings_share_progress", "Yes" if _settings["share_progress"] else "No"
     )
+    st.session_state.setdefault("settings_daily_target", _settings["daily_word_target"])
 
     st.text_input(
         "Alias", key="settings_alias", max_chars=10,
@@ -2064,6 +2067,10 @@ if st.session_state["current_page"] == "Settings":
     st.caption("Automatically add new words other users add to your own list.")
     st.selectbox("Share My Progress", ["No", "Yes"], key="settings_share_progress")
     st.caption("Let other users see your accuracy and streak.")
+    st.number_input(
+        "Daily Word Target", key="settings_daily_target", min_value=1, max_value=100, step=1,
+    )
+    st.caption("How many words a day counts toward your Progress tab streak.")
 
     if st.button("Save Settings", type="primary"):
         db.save_user_settings(
@@ -2071,6 +2078,7 @@ if st.session_state["current_page"] == "Settings":
             st.session_state["settings_alias"],
             st.session_state["settings_auto_add"] == "Yes",
             st.session_state["settings_share_progress"] == "Yes",
+            st.session_state["settings_daily_target"],
         )
         st.toast("Settings saved.", icon="✅")
 
@@ -2101,8 +2109,9 @@ you no longer want to study.
 Mastered, Learning, or Needs Work, your quiz streak, and a chart of
 your daily accuracy and quiz volume over time.
 
-**Settings** — Personalize your account: a short display alias, and
-preferences for community word sharing and progress visibility.
+**Settings** — Personalize your account: a short display alias, your
+daily word target for the Progress streak, and preferences for
+community word sharing and progress visibility.
 
 **App Ideas** — Have a suggestion? Type it here. Every idea is saved
 and reviewed to help decide what to build next.
