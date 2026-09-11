@@ -2119,13 +2119,20 @@ if st.session_state["current_page"] == "App Ideas":
     st.subheader("App Ideas")
     st.caption("Have a suggestion for the app? Type it below - every idea gets reviewed.")
 
+    IDEA_TYPES = ["Improvement", "Bug Fix"]
+    IDEA_STATUSES = ["Submitted", "Rejected", "Completed"]
+
     st.session_state.setdefault("app_idea_version", 0)
     # Versioned key, not a plain one cleared via session_state after
     # submit - popping/reassigning an already-instantiated widget's key
     # doesn't reliably reset it in Streamlit (same gotcha this file's
     # form-clearing logic elsewhere already works around); a fresh key
-    # after each submit is what actually guarantees an empty box.
+    # after each submit is what actually guarantees an empty box. Both
+    # the type dropdown and the text area share one version counter so
+    # they reset together.
+    _idea_type_key = f"app_idea_type_{st.session_state['app_idea_version']}"
     _idea_key = f"app_idea_draft_{st.session_state['app_idea_version']}"
+    st.selectbox("Idea Type", IDEA_TYPES, key=_idea_type_key)
     st.text_area(
         "Your idea", key=_idea_key, label_visibility="collapsed",
         placeholder='e.g. "Add a dark mode" or "Let me filter by part of speech"',
@@ -2133,7 +2140,7 @@ if st.session_state["current_page"] == "App Ideas":
     if st.button("Submit Idea", type="primary"):
         _idea_text = st.session_state[_idea_key].strip()
         if _idea_text:
-            db.add_app_idea(_uid(), _idea_text)
+            db.add_app_idea(_uid(), _idea_text, st.session_state[_idea_type_key])
             st.session_state["app_idea_version"] += 1
             st.toast("Thanks! Your idea has been submitted.", icon="✅")
             st.rerun()
@@ -2144,15 +2151,34 @@ if st.session_state["current_page"] == "App Ideas":
     if _my_ideas:
         st.markdown("**Your submitted ideas**")
         for _idea in _my_ideas:
-            st.markdown(f"- {_idea['submitted_at']:%b %d, %Y}: {_idea['idea_text']}")
+            st.markdown(
+                f"- {_idea['submitted_at']:%b %d, %Y} · **{_idea['idea_type']}** · "
+                f"_{_idea['status']}_ — {_idea['idea_text']}"
+            )
 
     # Owner-only: every user's ideas in one place, so reviewing them
     # doesn't require going around the app to query the database
-    # directly.
+    # directly. Status is editable only here - everyone else's own
+    # list above (including the owner's own ideas there) is read-only,
+    # since status is meant to reflect what's actually been reviewed/
+    # built, not something a submitter sets themselves.
     if _uid() == db._LEGACY_OWNER_EMAIL:
         with st.expander("All submitted ideas (owner view)"):
             _all_ideas = db.get_all_app_ideas()
             if not _all_ideas:
                 st.caption("No ideas submitted yet.")
             for _idea in _all_ideas:
-                st.markdown(f"- **{_idea['user_id']}** ({_idea['submitted_at']:%b %d, %Y}): {_idea['idea_text']}")
+                _status_col, _text_col = st.columns([1, 3], gap="small")
+                with _status_col:
+                    st.selectbox(
+                        "Status", IDEA_STATUSES, index=IDEA_STATUSES.index(_idea["status"]),
+                        key=f"idea_status_{_idea['id']}", label_visibility="collapsed",
+                        on_change=lambda _id=_idea["id"]: db.update_app_idea_status(
+                            _id, st.session_state[f"idea_status_{_id}"]
+                        ),
+                    )
+                with _text_col:
+                    st.markdown(
+                        f"**{_idea['user_id']}** ({_idea['submitted_at']:%b %d, %Y}) · "
+                        f"**{_idea['idea_type']}** — {_idea['idea_text']}"
+                    )

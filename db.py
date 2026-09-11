@@ -209,9 +209,23 @@ def _create_schema(con):
             id            INTEGER PRIMARY KEY DEFAULT nextval('app_idea_id_seq'),
             user_id       TEXT NOT NULL,
             idea_text     TEXT NOT NULL,
-            submitted_at  TIMESTAMP NOT NULL
+            submitted_at  TIMESTAMP NOT NULL,
+            idea_type     TEXT NOT NULL DEFAULT 'Improvement',
+            status        TEXT NOT NULL DEFAULT 'Submitted'
         )
     """)
+    # idea_type/status were added after this table already existed in
+    # deployed DBs - CREATE TABLE IF NOT EXISTS above is a no-op against
+    # those, so the columns need adding explicitly too. IF NOT EXISTS
+    # here makes this safe to run against a fresh DB as well, where the
+    # CREATE TABLE just created them already.
+    # No NOT NULL here (unlike the CREATE TABLE above) - DuckDB's ALTER
+    # TABLE ADD COLUMN doesn't support adding a column with a constraint
+    # (confirmed live: raises "Adding columns with constraints not yet
+    # supported"). The DEFAULT alone is enough in practice - every row
+    # is written through add_app_idea(), which always supplies both.
+    con.execute("ALTER TABLE app_ideas ADD COLUMN IF NOT EXISTS idea_type TEXT DEFAULT 'Improvement'")
+    con.execute("ALTER TABLE app_ideas ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Submitted'")
     _migrate_legacy_single_user_schema(con)
 
 
@@ -742,11 +756,12 @@ def save_user_settings(user_id: str, alias: str, auto_add_community_words: bool,
     r2_storage.upload_db()
 
 
-def add_app_idea(user_id: str, idea_text: str):
+def add_app_idea(user_id: str, idea_text: str, idea_type: str = "Improvement"):
     con = get_connection()
     con.execute(
-        "INSERT INTO app_ideas (user_id, idea_text, submitted_at) VALUES (?, ?, ?)",
-        [user_id, idea_text.strip(), datetime.now(timezone.utc)],
+        "INSERT INTO app_ideas (user_id, idea_text, submitted_at, idea_type, status) "
+        "VALUES (?, ?, ?, ?, 'Submitted')",
+        [user_id, idea_text.strip(), datetime.now(timezone.utc), idea_type],
     )
     con.close()
     r2_storage.upload_db()
@@ -755,23 +770,39 @@ def add_app_idea(user_id: str, idea_text: str):
 def get_app_ideas(user_id: str) -> list[dict]:
     """This user's own submitted ideas, newest first - shown back to
     them on the App Ideas page so they can see what they've already
-    suggested."""
+    suggested, including where each one stands (Submitted/Rejected/
+    Completed)."""
     con = get_connection()
     rows = con.execute(
-        "SELECT idea_text, submitted_at FROM app_ideas WHERE user_id = ? ORDER BY submitted_at DESC",
+        "SELECT idea_text, submitted_at, idea_type, status FROM app_ideas "
+        "WHERE user_id = ? ORDER BY submitted_at DESC",
         [user_id],
     ).fetchall()
     con.close()
-    return [{"idea_text": r[0], "submitted_at": r[1]} for r in rows]
+    return [{"idea_text": r[0], "submitted_at": r[1], "idea_type": r[2], "status": r[3]} for r in rows]
 
 
 def get_all_app_ideas() -> list[dict]:
     """Every user's submitted ideas, newest first - for the owner-only
     review section of the App Ideas page (see app.py), so ideas can be
-    reviewed centrally without needing a separate admin tool."""
+    reviewed centrally without needing a separate admin tool. Includes
+    the row id so the owner view can update an idea's status."""
     con = get_connection()
     rows = con.execute(
-        "SELECT user_id, idea_text, submitted_at FROM app_ideas ORDER BY submitted_at DESC"
+        "SELECT id, user_id, idea_text, submitted_at, idea_type, status "
+        "FROM app_ideas ORDER BY submitted_at DESC"
     ).fetchall()
     con.close()
-    return [{"user_id": r[0], "idea_text": r[1], "submitted_at": r[2]} for r in rows]
+    return [
+        {"id": r[0], "user_id": r[1], "idea_text": r[2], "submitted_at": r[3], "idea_type": r[4], "status": r[5]}
+        for r in rows
+    ]
+
+
+def update_app_idea_status(idea_id: int, status: str):
+    """Owner-only (enforced in app.py, not here) - marks an idea
+    Submitted/Rejected/Completed once it's been reviewed or built."""
+    con = get_connection()
+    con.execute("UPDATE app_ideas SET status = ? WHERE id = ?", [status, idea_id])
+    con.close()
+    r2_storage.upload_db()
