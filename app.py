@@ -297,6 +297,19 @@ st.markdown(
         min-width: 200px !important;
     }}
 
+    /* My Words: each word's checkbox+expander row, narrowed 20% and
+       centered per user request ("the width of the tile...is too
+       large. Reduce by 20%"). Substring match, not an exact key - one
+       distinct st.container key per word (the word itself, same
+       pattern as the sel_ checkbox key below it), all sharing this
+       width treatment. Scales row_check and row_expander down together
+       since they're flex-sized off this container's own width, so
+       their 1:11 proportion (checkbox : expander) is unaffected. */
+    [class*="st-key-word_row_"] {{
+        max-width: 80%;
+        margin: 0 auto;
+    }}
+
     /* My Words sticky-footer pagination arrows - dropped the "Prev"/"Next"
        text down to bare < > glyphs, bumped up so a single character still
        reads clearly. */
@@ -466,18 +479,18 @@ st.markdown(
     .st-key-top_bar_identity [data-testid="stCaptionContainer"] p {{
         font-weight: 700 !important;
     }}
-    /* Menu: plain white icon, not a bordered button box - same
-       transparent-background treatment as the drawer's own ✕ close
-       icon, so the bar's own blue fill (above) shows through. Text
-       label ("Navigation") and Log out's own text were both tried and
-       then dropped again - icon-only for both, back to how this
-       started. */
+    /* Menu: plain white icon, not a bordered button box - transparent
+       background so the bar's own blue fill (above) shows through.
+       Text label ("Navigation") and Log out's own text were both tried
+       and then dropped again - icon-only for both, back to how this
+       started. font-size bumped 30% (1.3rem -> 1.69rem) per user
+       request ("make menu icon larger 30%"). */
     .st-key-menu_toggle_btn button {{
         background: transparent !important;
         border: none !important;
         box-shadow: none !important;
         color: #FFFFFF;
-        font-size: 1.3rem;
+        font-size: 1.69rem;
         padding: 0.2rem 0.4rem;
     }}
     /* Log out: the inline SVG "door with an exit arrow" icon (the
@@ -548,43 +561,15 @@ st.markdown(
            from the button list via its own margin-bottom below. */
         gap: 0;
     }}
-    /* Logo + ✕ close button share one row at the very top of the
-       drawer. The logo is centered on the row's own full width; the ✕
-       is taken out of that flex flow entirely (position:absolute) and
-       pinned to the row's top-right corner instead, so the two are
-       positioned completely independently - centering the logo no
-       longer has to also account for the ✕ sitting beside it, and the
-       ✕ can end up sitting slightly on top of the logo (allowed,
-       expected even) once the logo's big enough to reach that corner
-       itself. position:relative on the row is what gives the ✕'s
-       position:absolute something to measure "top-right" against. */
+    /* Logo alone at the top of the drawer, centered on the row's full
+       width. This row used to also carry a ✕ close button pinned to
+       its top-right corner - dropped per user request (Menu already
+       toggles the drawer open/closed, so a dedicated close icon was
+       redundant), which is why this is back to a plain centered row
+       instead of the position:relative/absolute pairing a two-item
+       row needed. */
     .st-key-nav_header_row {{
-        position: relative;
         display: flex;
-        /* Explicit, not left to default - a Streamlit vertical block
-           (which this is, like every st.container) defaults to
-           flex-direction:column, not row. Leaving it unset here had
-           the image and the close button's own container stacking
-           vertically instead of sharing one row - invisibly, since
-           the close button is position:absolute and the image alone
-           still looked right, but it meant the (zero-height, see
-           .st-key-nav_close_btn) second "row" was still a real flex
-           item with Streamlit's own default column gap above it,
-           padding out this row's own height by that gap for no
-           visible reason. */
-        flex-direction: row;
-        /* Same default-gap gotcha as the flex-direction one above, just
-           on the other axis now that it's row - Streamlit's own
-           vertical-block base style carries a real gap (~16px, matches
-           the sidebar's own default that .st-key-nav_sidebar already
-           zeroes out below), not just flex-direction. Left unset here,
-           it still applied between the image and the ✕'s own
-           container even at width:0 (a gap sits between flex items
-           regardless of their own size), throwing the "center" in
-           justify-content:center off by half that gap (confirmed live:
-           the logo rendered measurably left of the drawer's true
-           center). */
-        gap: 0;
         justify-content: center;
         padding: 0 0.5rem;
         margin-bottom: 0.25rem;
@@ -593,66 +578,10 @@ st.markdown(
        puts on an element's own wrapper (confirmed live - the image's
        real rendered height and this row's own box height didn't
        match, and that gap was extra dead space stacking on top of
-       this row's own margin-bottom above). flex-shrink:0 stops the
-       logo from being squeezed narrower than its own requested width
-       (confirmed live: it was rendering at 96px against a requested
-       125px) to make room for its row-sibling, the ✕'s own container -
-       which has no visible content of its own to need any width for
-       (see .st-key-nav_close_btn) but still carried Streamlit's own
-       default non-zero min-width as a flex item, shrinking the flex-
-       basis:auto logo to compensate. */
+       this row's own margin-bottom above). */
     .st-key-nav_header_row [data-testid="stElementContainer"] {{
         width: fit-content;
         margin-bottom: 0;
-        flex-shrink: 0;
-    }}
-    /* Streamlit gives every element's own stElementContainer wrapper
-       position:relative by default (confirmed live - that's what
-       .st-key-nav_close_btn, the wrapper Streamlit names after the
-       button's own key, already had) - left alone, THAT becomes the
-       nearest positioned ancestor for position:absolute below instead
-       of this row, which is why the ✕ first ended up positioned
-       against its own tiny wrapper (landing near the row's top-left,
-       nowhere near "top-right of the header row" as intended). Forcing
-       it back to static is what makes .st-key-nav_header_row's own
-       position:relative the one that counts. */
-    .st-key-nav_close_btn {{
-        position: static !important;
-        /* Its own content is what's position:absolute (below), which
-           doesn't contribute to a static parent's auto height - but
-           the parent itself still collapses to a default ~16px single-
-           line height rather than truly 0 (confirmed live: that 16px
-           was still padding out the header row's own bottom, on top
-           of the row's own margin-bottom, even after that margin was
-           already cut down). Zeroing it out here removes the last of
-           it; overflow:visible keeps the ✕ (rendered well outside this
-           now-zero-height box) from getting clipped. */
-        height: 0;
-        width: 0;
-        /* width:0 alone wasn't enough (confirmed live: Streamlit's own
-           base style puts a 16px min-width on this same kind of
-           wrapper - already documented elsewhere in this file, for the
-           single-letter-word buttons - and min-width silently wins
-           over a smaller explicit width per the CSS spec). That
-           leftover 16px was exactly what was still throwing off the
-           logo's centering above. */
-        min-width: 0;
-        overflow: visible;
-    }}
-    .st-key-nav_header_row [data-testid="stButton"] {{
-        position: absolute;
-        top: 0;
-        right: 0.5rem;
-    }}
-    /* Plain icon, not a bordered button box - no outline, no fill, no
-       hover/focus box-shadow ring (Streamlit's default focus style),
-       just the ✕ glyph itself. */
-    .st-key-nav_header_row [data-testid="stButton"] button {{
-        width: auto !important;
-        padding: 0;
-        background: transparent !important;
-        border: none !important;
-        box-shadow: none !important;
     }}
     /* Nav buttons: full drawer width, touching (no gap - see the
        sidebar's own gap:0 above), square corners - reads as one stack
@@ -897,7 +826,6 @@ if st.session_state["nav_open"]:
     with st.container(key="nav_sidebar"):
         with st.container(key="nav_header_row"):
             st.image(str(IMAGES_DIR / "vocapp_with_text.png"), width=125)
-            st.button("✕", key="nav_close_btn", on_click=_toggle_nav, help="Close menu")
         for _page in _PAGES:
             st.button(
                 _page, key=f"nav_btn_{_page}", on_click=_select_page, args=(_page,),
@@ -1797,37 +1725,44 @@ if st.session_state["current_page"] == "My Words":
         else:
             for w in page_words:
                 avg = f"{w['avg_accuracy']:.0f}%" if w["avg_accuracy"] is not None else "not quizzed yet"
-                row_check, row_expander = st.columns([1, 11], gap="xsmall")
-                with row_check:
-                    st.checkbox("Select", key=f"sel_{w['word']}", label_visibility="collapsed")
-                with row_expander:
-                    with st.expander(f"{w['word']}  —  {avg}"):
-                        speaker.play_button(w["word"], w.get("audio_url", ""))
-                        def_senses = _definition_senses(w["definition"])
-                        # Always numbered, even for a single sense - see
-                        # the matching comment in the Add Word section.
-                        st.markdown("**Definition:**")
-                        for i, s in enumerate(def_senses, 1):
-                            st.markdown(f"{i}. {s}")
-                        meta_bits = [b for b in (w["part_of_speech"], w["phonetic"]) if b]
-                        if meta_bits:
-                            st.caption("  •  ".join(meta_bits))
-                        _render_difficulty_badge(w["word"])
-                        if w["example"]:
-                            st.markdown(f"*Example: {w['example']}*")
-                        if w["synonyms"]:
-                            st.caption(f"Synonyms: {w['synonyms']}")
-                        if w["antonyms"]:
-                            st.caption(f"Antonyms: {w['antonyms']}")
-                        st.caption(f"Quizzed {w['times_quizzed']} time(s)"
-                                   + (f", last on {w['last_quizzed']:%b %d, %Y}" if w["last_quizzed"] else ""))
-                        if w["next_review_date"]:
-                            st.caption(f"Next review: {w['next_review_date']:%b %d, %Y}")
-                        if w["times_quizzed"] > 0:
-                            st.markdown("**Attempt history:**")
-                            for a in db.get_attempts(_uid(), w["word"]):
-                                st.markdown(f"- {a['attempt_date']:%b %d}: {a['accuracy']}% — \"{a['your_answer']}\"")
-                        st.button("Delete", key=f"del_{w['word']}", on_click=_do_single_delete, args=(w["word"],))
+                # Keyed wrapper (substring-matched in CSS, same "word text
+                # as part of the key" pattern the sel_ checkbox below
+                # already uses) so this row's overall width can be
+                # narrowed 20% per user request ("the tile...is too
+                # large. Reduce by 20%") without touching the toolbar
+                # row above it.
+                with st.container(key=f"word_row_{w['word']}"):
+                    row_check, row_expander = st.columns([1, 11], gap="xsmall")
+                    with row_check:
+                        st.checkbox("Select", key=f"sel_{w['word']}", label_visibility="collapsed")
+                    with row_expander:
+                        with st.expander(f"{w['word']}  —  {avg}"):
+                            speaker.play_button(w["word"], w.get("audio_url", ""))
+                            def_senses = _definition_senses(w["definition"])
+                            # Always numbered, even for a single sense - see
+                            # the matching comment in the Add Word section.
+                            st.markdown("**Definition:**")
+                            for i, s in enumerate(def_senses, 1):
+                                st.markdown(f"{i}. {s}")
+                            meta_bits = [b for b in (w["part_of_speech"], w["phonetic"]) if b]
+                            if meta_bits:
+                                st.caption("  •  ".join(meta_bits))
+                            _render_difficulty_badge(w["word"])
+                            if w["example"]:
+                                st.markdown(f"*Example: {w['example']}*")
+                            if w["synonyms"]:
+                                st.caption(f"Synonyms: {w['synonyms']}")
+                            if w["antonyms"]:
+                                st.caption(f"Antonyms: {w['antonyms']}")
+                            st.caption(f"Quizzed {w['times_quizzed']} time(s)"
+                                       + (f", last on {w['last_quizzed']:%b %d, %Y}" if w["last_quizzed"] else ""))
+                            if w["next_review_date"]:
+                                st.caption(f"Next review: {w['next_review_date']:%b %d, %Y}")
+                            if w["times_quizzed"] > 0:
+                                st.markdown("**Attempt history:**")
+                                for a in db.get_attempts(_uid(), w["word"]):
+                                    st.markdown(f"- {a['attempt_date']:%b %d}: {a['accuracy']}% — \"{a['your_answer']}\"")
+                            st.button("Delete", key=f"del_{w['word']}", on_click=_do_single_delete, args=(w["word"],))
 
             # Sticky footer - fixed to the bottom of the viewport (CSS below)
             # rather than a plain row, so Prev/page-info/Next stay reachable
