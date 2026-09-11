@@ -777,15 +777,19 @@ def save_user_settings(
     r2_storage.upload_db()
 
 
-def add_app_idea(user_id: str, idea_text: str, idea_type: str = "Improvement"):
+def add_app_idea(user_id: str, idea_text: str, idea_type: str = "Improvement") -> int:
+    """Returns the new idea's id - app_idea_id_seq's nextval, the same
+    number displayed everywhere as "ID-0001" (see app.py's format_idea_id)
+    - so the submission confirmation can show it immediately."""
     con = get_connection()
-    con.execute(
+    idea_id = con.execute(
         "INSERT INTO app_ideas (user_id, idea_text, submitted_at, idea_type, status) "
-        "VALUES (?, ?, ?, ?, 'Submitted')",
+        "VALUES (?, ?, ?, ?, 'Submitted') RETURNING id",
         [user_id, idea_text.strip(), datetime.now(timezone.utc), idea_type],
-    )
+    ).fetchone()[0]
     con.close()
     r2_storage.upload_db()
+    return idea_id
 
 
 def get_app_ideas(user_id: str) -> list[dict]:
@@ -795,12 +799,12 @@ def get_app_ideas(user_id: str) -> list[dict]:
     Completed)."""
     con = get_connection()
     rows = con.execute(
-        "SELECT idea_text, submitted_at, idea_type, status FROM app_ideas "
+        "SELECT id, idea_text, submitted_at, idea_type, status FROM app_ideas "
         "WHERE user_id = ? ORDER BY submitted_at DESC",
         [user_id],
     ).fetchall()
     con.close()
-    return [{"idea_text": r[0], "submitted_at": r[1], "idea_type": r[2], "status": r[3]} for r in rows]
+    return [{"id": r[0], "idea_text": r[1], "submitted_at": r[2], "idea_type": r[3], "status": r[4]} for r in rows]
 
 
 def get_all_app_ideas() -> list[dict]:

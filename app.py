@@ -2135,6 +2135,14 @@ and reviewed to help decide what to build next.
 # Free-text suggestions, saved per user (db.app_ideas) - reviewed
 # centrally (see the owner-only section below) to help decide what to
 # build next, rather than needing a separate feedback channel.
+def _format_idea_id(idea_id: int) -> str:
+    """The db's own auto-increment id, zero-padded to 4 digits - "ID-0001"
+    and up, per user request. Not a separate counter: whatever id
+    app_idea_id_seq actually assigned IS the idea's number, just
+    formatted for display."""
+    return f"ID-{idea_id:04d}"
+
+
 if st.session_state["current_page"] == "App Ideas":
     st.subheader("App Ideas")
     st.caption("Have a suggestion for the app? Type it below - every idea gets reviewed.")
@@ -2160,9 +2168,9 @@ if st.session_state["current_page"] == "App Ideas":
     if st.button("Submit Idea", type="primary"):
         _idea_text = st.session_state[_idea_key].strip()
         if _idea_text:
-            db.add_app_idea(_uid(), _idea_text, st.session_state[_idea_type_key])
+            _new_id = db.add_app_idea(_uid(), _idea_text, st.session_state[_idea_type_key])
             st.session_state["app_idea_version"] += 1
-            st.toast("Thanks! Your idea has been submitted.", icon="✅")
+            st.toast(f"Thanks! Your idea ({_format_idea_id(_new_id)}) has been submitted.", icon="✅")
             st.rerun()
         else:
             st.warning("Type something first.")
@@ -2179,7 +2187,10 @@ if st.session_state["current_page"] == "App Ideas":
             if not _status_ideas:
                 st.caption("No ideas here yet.")
             for _idea in _status_ideas:
-                st.markdown(f"- {_idea['submitted_at']:%b %d, %Y} · **{_idea['idea_type']}** — {_idea['idea_text']}")
+                st.markdown(
+                    f"- **{_format_idea_id(_idea['id'])}** · {_idea['submitted_at']:%b %d, %Y} · "
+                    f"**{_idea['idea_type']}** — {_idea['idea_text']}"
+                )
 
     # Owner-only: every user's ideas in one place, so reviewing them
     # doesn't require going around the app to query the database
@@ -2204,6 +2215,6 @@ if st.session_state["current_page"] == "App Ideas":
                     )
                 with _text_col:
                     st.markdown(
-                        f"**{_idea['user_id']}** ({_idea['submitted_at']:%b %d, %Y}) · "
-                        f"**{_idea['idea_type']}** — {_idea['idea_text']}"
+                        f"**{_format_idea_id(_idea['id'])}** · **{_idea['user_id']}** "
+                        f"({_idea['submitted_at']:%b %d, %Y}) · **{_idea['idea_type']}** — {_idea['idea_text']}"
                     )
