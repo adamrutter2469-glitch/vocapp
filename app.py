@@ -2167,14 +2167,19 @@ if st.session_state["current_page"] == "App Ideas":
         else:
             st.warning("Type something first.")
 
+    # This user's own ideas, grouped into one expander per status
+    # (Submitted/Completed/Rejected - same expander-per-group shape as
+    # "All submitted ideas (owner view)" below) instead of the one flat
+    # "Your submitted ideas" list this replaced, so it's clear at a
+    # glance what's still pending vs. already acted on.
     _my_ideas = db.get_app_ideas(_uid())
-    if _my_ideas:
-        st.markdown("**Your submitted ideas**")
-        for _idea in _my_ideas:
-            st.markdown(
-                f"- {_idea['submitted_at']:%b %d, %Y} · **{_idea['idea_type']}** · "
-                f"_{_idea['status']}_ — {_idea['idea_text']}"
-            )
+    for _status in ["Submitted", "Completed", "Rejected"]:
+        _status_ideas = [i for i in _my_ideas if i["status"] == _status]
+        with st.expander(f"{_status} ({len(_status_ideas)})"):
+            if not _status_ideas:
+                st.caption("No ideas here yet.")
+            for _idea in _status_ideas:
+                st.markdown(f"- {_idea['submitted_at']:%b %d, %Y} · **{_idea['idea_type']}** — {_idea['idea_text']}")
 
     # Owner-only: every user's ideas in one place, so reviewing them
     # doesn't require going around the app to query the database
