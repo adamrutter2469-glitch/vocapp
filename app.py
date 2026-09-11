@@ -744,14 +744,14 @@ st.markdown(
     .st-key-progress_chart_legend .cl-swatch-bar {{
         display: inline-block;
         width: 14px; height: 10px; border-radius: 2px;
-        background: #001D56;
-        border-top: 2px solid #5BABFB;
+        background: #5BABFB;
+        border-top: 2px solid #001D56;
         vertical-align: middle;
     }}
     .st-key-progress_chart_legend .cl-swatch-line {{
         display: inline-block;
         width: 16px; height: 2.5px;
-        background: #0270FE;
+        background: #001D56;
         border-radius: 2px;
         vertical-align: middle;
     }}
@@ -1909,7 +1909,10 @@ if st.session_state["current_page"] == "Progress":
             # rest.
             PROGRESS_CHART_WIDTH_PX = 704
             DEFAULT_WINDOW_DAYS = 21
-            BAR_STEP_PX = (PROGRESS_CHART_WIDTH_PX / DEFAULT_WINDOW_DAYS) * 0.7
+            # 0.7 was the original per-bar fill fraction; the extra 0.85
+            # on top is a further 15% narrower per user request ("make
+            # the bar widths 15% less").
+            BAR_STEP_PX = (PROGRESS_CHART_WIDTH_PX / DEFAULT_WINDOW_DAYS) * 0.7 * 0.85
             MIN_CHART_WIDTH_PX = 300
             chart_width = max(MIN_CHART_WIDTH_PX, len(date_order) * BAR_STEP_PX)
             # "8/14" not "Aug 14" - shorter, and strftime's portable
@@ -1968,7 +1971,10 @@ if st.session_state["current_page"] == "Progress":
             date_x = alt.X("date_label:O", sort=label_order, axis=None)
             bar = (
                 alt.Chart(words_df)
-                .mark_bar(color="#001D56", stroke="#5BABFB", strokeWidth=1, size=BAR_STEP_PX,
+                # Light blue fill / dark blue stroke - swapped from the
+                # original dark fill / light stroke per user request
+                # ("bars...light blue, labels dark blue").
+                .mark_bar(color="#5BABFB", stroke="#001D56", strokeWidth=1, size=BAR_STEP_PX,
                           cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
                 .encode(
                     x=date_x,
@@ -1979,7 +1985,9 @@ if st.session_state["current_page"] == "Progress":
             )
             bar_labels = (
                 alt.Chart(words_df)
-                .mark_text(fontWeight="bold", fontSize=9, color="#FFFFFF", angle=270)
+                # Dark blue, not white - the bar fill above is light now,
+                # so white text would no longer have enough contrast.
+                .mark_text(fontWeight="bold", fontSize=9, color="#001D56", angle=270)
                 .encode(x=date_x, y=alt.Y("label_y:Q", axis=None, scale=shared_scale),
                         text=alt.Text("words_quizzed:Q"))
             )
@@ -1997,9 +2005,12 @@ if st.session_state["current_page"] == "Progress":
                 .mark_text(dx=-15, fontSize=10, color="#94A6CC", angle=270)
                 .encode(x=date_x, y=alt.Y("zero:Q", axis=None, scale=shared_scale), text=alt.Text("date_label:O"))
             )
+            # Dark blue throughout (line, points, labels) - was the
+            # medium #0270FE brand blue, changed per user request
+            # ("Line on line chart and labels of line chart dark blue").
             line = (
                 alt.Chart(acc_df)
-                .mark_line(color="#0270FE", strokeWidth=2.5)
+                .mark_line(color="#001D56", strokeWidth=2.5)
                 .encode(
                     x=date_x,
                     y=alt.Y("plot_y:Q", axis=None, scale=shared_scale),
@@ -2009,12 +2020,12 @@ if st.session_state["current_page"] == "Progress":
             )
             line_points = (
                 alt.Chart(acc_df)
-                .mark_point(color="#0270FE", filled=True, size=40)
+                .mark_point(color="#001D56", filled=True, size=40)
                 .encode(x=date_x, y=alt.Y("plot_y:Q", axis=None, scale=shared_scale))
             )
             line_labels = (
                 alt.Chart(acc_df)
-                .mark_text(dy=-10, fontWeight="bold", fontSize=11, color="#0270FE")
+                .mark_text(dy=-10, fontWeight="bold", fontSize=11, color="#001D56")
                 .encode(x=date_x, y=alt.Y("plot_y:Q", axis=None, scale=shared_scale),
                         text=alt.Text("avg_accuracy:Q", format=".0f"))
             )
