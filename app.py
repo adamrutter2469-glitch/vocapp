@@ -2200,7 +2200,12 @@ if st.session_state["current_page"] == "App Ideas":
     # built, not something a submitter sets themselves.
     if _uid() == db._LEGACY_OWNER_EMAIL:
         with st.expander("All submitted ideas (owner view)"):
-            _all_ideas = db.get_all_app_ideas()
+            # Grouped Submitted -> Completed -> Rejected (same order as
+            # the three sections above), not just newest-first - a
+            # stable sort, so within each group it's still newest-first
+            # exactly as get_all_app_ideas() already returned it.
+            _STATUS_SORT_ORDER = ["Submitted", "Completed", "Rejected"]
+            _all_ideas = sorted(db.get_all_app_ideas(), key=lambda i: _STATUS_SORT_ORDER.index(i["status"]))
             if not _all_ideas:
                 st.caption("No ideas submitted yet.")
             for _idea in _all_ideas:
