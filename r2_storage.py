@@ -19,6 +19,27 @@ also surfaces secrets as environment variables. If they're missing,
 every function here is a no-op: R2 sync layers on top of local storage,
 it doesn't replace the "just run it locally" path that's worked all
 along, so a machine without R2 configured just keeps working local-only.
+
+KNOWN LIMITATION - whole-file, last-writer-wins, no real sync: this
+only actually works cleanly with ONE process's worth of local disk
+state at a time. download_db() pulls once per process and upload_db()
+pushes the WHOLE local file on every write - there's no per-row
+merging and no check that R2 hasn't changed since this process's own
+download. Confirmed live (2026-09-12): the deployed Streamlit Cloud
+app had been running long enough that its own local copy predated a
+batch of app_ideas.status edits made directly against a local
+vocab.duckdb via a one-off script (then pushed with upload_db()) - the
+next ordinary write the LIVE app made (a new app idea being submitted)
+re-uploaded ITS OWN still-stale local file and silently wiped those
+status edits back out, with no error anywhere. Editing the DB directly
+on a machine other than the one actively serving traffic is exactly
+the situation this breaks under; it isn't purely academic - a user
+(app_ideas #19) noticed the reverted statuses before anyone caught it
+in code. Until this gets real conflict handling, avoid one-off local
+DB edits while the deployed app might be alive and could write again
+before that fix is deployed (a git push to main both fixes the code
+AND forces Streamlit Cloud to restart with a fresh download, which is
+the only thing that actually clears a stale in-process copy).
 """
 
 import os
