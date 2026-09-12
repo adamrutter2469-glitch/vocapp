@@ -923,7 +923,7 @@ st.markdown(
         color: {PAL['text']} !important;
         opacity: 0.7;
     }}
-    /* Radio option labels OUTSIDE a popover (Progress' Last 3 weeks/
+    /* Radio option labels OUTSIDE a popover (Progress' Last 2 weeks/
        All time) - same hardcoded-dark-navy issue as stWidgetLabel
        above, different component. The popover-scoped version of this
        same fix already exists a few rules up (My Words' Filter/Sort);
@@ -2077,18 +2077,19 @@ if st.session_state["current_page"] == "Progress":
         if has_alltime_trend:
             st.subheader("Accuracy over time")
 
-            # Defaults to a rolling last 3 weeks - the full history
+            # Defaults to a rolling last 2 weeks - the full history
             # eventually produces enough bars that a fixed per-bar width
             # (see chart_width below) would need real horizontal
-            # scrolling to stay readable; 3 weeks is the common case
+            # scrolling to stay readable; 2 weeks is the common case
             # that still fits without it, with "All time" one click away.
-            st.session_state.setdefault("progress_chart_range", "Last 3 weeks")
+            # (Was 3 weeks - shortened per user request, app_ideas #15.)
+            st.session_state.setdefault("progress_chart_range", "Last 2 weeks")
             st.radio(
-                "Date range", ["Last 3 weeks", "All time"], key="progress_chart_range",
+                "Date range", ["Last 2 weeks", "All time"], key="progress_chart_range",
                 horizontal=True, label_visibility="collapsed",
             )
-            if st.session_state["progress_chart_range"] == "Last 3 weeks":
-                cutoff = db.today_local() - timedelta(days=20)
+            if st.session_state["progress_chart_range"] == "Last 2 weeks":
+                cutoff = db.today_local() - timedelta(days=13)
                 acc_trend = [(d, v) for d, v in acc_trend if d >= cutoff]
                 words_trend = [(d, v) for d, v in words_trend if d >= cutoff]
 
@@ -2107,7 +2108,7 @@ if st.session_state["current_page"] == "Progress":
             # question: exactly one tick per actual date, always.
             date_order = sorted(set(acc_df["date"]) | set(words_df["date"]))
             # Per-bar step: DEFAULT_WINDOW_DAYS bars (the default "Last
-            # 3 weeks" view) would exactly fill the chart's real
+            # 2 weeks" view) would exactly fill the chart's real
             # measured width (PROGRESS_CHART_WIDTH_PX, from
             # .st-key-progress_chart_scroll's getBoundingClientRect -
             # Streamlit's centered layout caps it there regardless of
@@ -2118,13 +2119,13 @@ if st.session_state["current_page"] == "Progress":
             # Net effect: the default view no longer fills the full
             # width edge to edge (some blank space on the right instead)
             # - an accepted trade-off for bars this much narrower being
-            # possible at all. Beyond 3 weeks ("All time" with a longer
+            # possible at all. Beyond 2 weeks ("All time" with a longer
             # history), the chart keeps growing at the same per-bar step
             # instead of cramming more bars into a fixed width, and
             # .st-key-progress_chart_scroll's overflow-x handles the
             # rest.
             PROGRESS_CHART_WIDTH_PX = 704
-            DEFAULT_WINDOW_DAYS = 21
+            DEFAULT_WINDOW_DAYS = 14
             # 0.7 was the original per-bar fill fraction; the extra 0.85
             # on top is a further 15% narrower per user request ("make
             # the bar widths 15% less").
@@ -2264,10 +2265,10 @@ if st.session_state["current_page"] == "Progress":
                 )
         elif has_alltime_trend:
             # Enough all-time data to have shown the toggle at all, just
-            # none of it falls within the currently-selected "Last 3
+            # none of it falls within the currently-selected "Last 2
             # weeks" window (e.g. a long break) - "quiz more" would be
             # misleading advice here.
-            st.caption("No activity in the last 3 weeks - try \"All time\".")
+            st.caption("No activity in the last 2 weeks - try \"All time\".")
         elif acc_trend or words_trend:
             st.caption("Quiz on a few more days to see a trend here.")
 
