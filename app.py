@@ -481,119 +481,73 @@ st.markdown(
         margin-bottom: -0.425rem !important;
     }}
 
-    /* Top bar: Menu icon on the left, identity (alias or email)
-       centered, Log out icon on the right - see .st-key-nav_sidebar
-       below for where the old tab bar/logo went. Plain flex row, not
-       st.columns - st.columns' own children default to flex:1 1 0% /
-       align-items:stretch, which fights arbitrary-width content like
-       buttons (this exact problem, and why a plain container's direct
-       children sidestep it, is documented at more length below on
-       .st-key-nav_sidebar and was originally worked out for the old
-       header_row this replaced). position:relative + the identity
-       block's own position:absolute (below) is what gets it TRULY
-       centered on the bar regardless of the Menu/Log out icons'
-       widths, rather than just "centered in whatever space is left
-       over" the way a 3-way justify-content split would - the same
-       centering approach already worked out for the drawer's own logo. */
-    .st-key-top_bar {{
-        position: relative;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 0.5rem;
-        /* Same blue as a primary button (e.g. Submit) - confirmed live
-           via getComputedStyle, not eyeballed, since "primaryColor" in
-           .streamlit/config.toml (#0270FE) is a theme token Streamlit
-           applies through its own internal styling, not something this
-           file's own CSS can just reference by name. */
-        background-color: {PAL['accent']};
-        /* 0.42rem, not the original 0.6rem - measured live (59.2px
-           tall beforehand) and picked to land the bar's total height
-           at ~90% of that, not just an eyeballed smaller number.
-           Square corners now, not the 8px this started with. */
-        padding: 0.42rem 1rem;
-        border-radius: 0;
-    }}
-    .st-key-top_bar_identity {{
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        transform: translate(-50%, -50%);
+    /* Floating Menu button - replaces the old full-width top bar
+       entirely (user request: "remove the top welcome bar entirely...
+       selecting the menu at the top of the screen on mobile is less
+       comfortable than selecting it on the bottom"). Fixed bottom-
+       right for now; a Settings toggle to mirror it bottom-left (and
+       open the drawer from the left) is a planned follow-up, not
+       built yet. bottom:88px, not a smaller offset flush with the
+       corner - clears My Words' own sticky pagination footer
+       (.st-key-words_sticky_footer, ~64px tall including its border),
+       which would otherwise sit right underneath/overlap it on that
+       one page; simplest to size this once for the tallest case and
+       leave the same gap everywhere else. z-index above that footer
+       (999) so the FAB always floats on top of it, below the drawer
+       itself (3000) so opening the drawer still covers it. */
+    .st-key-menu_fab {{
+        position: fixed;
+        bottom: 88px;
+        right: 20px;
+        z-index: 1500;
         /* Without this, the container stays Streamlit's default
-           width:100% (same width as top_bar itself) - translateX(-50%)
-           then centers that full-width BOX, which does nothing
-           visible, and the caption text inside still reads as flush
-           left (confirmed live). Centering has to be based on the
-           text's own real width, not the row's. */
+           width:100% - right:20px then pins that full-width BOX's own
+           right edge, but the button inside (left-aligned by default)
+           still ends up rendered off at the far left (confirmed live:
+           getBoundingClientRect showed left:-20px, right:749px on a
+           769px-wide viewport). Same "size the box to its content
+           before positioning it" fix as the top-bar identity text and
+           the drawer's own logo used earlier. */
         width: fit-content;
     }}
-    .st-key-top_bar_identity [data-testid="stCaptionContainer"] {{
-        margin: 0;
-        white-space: nowrap;
-        /* White, readable against the bar's own blue fill - Streamlit's
-           caption styling otherwise sets its own muted grey via a more
-           specific rule, hence !important. 17px is 14px (this
-           caption's own previous size, measured live) + ~20%. */
-        color: {PAL['on_accent']} !important;
-        font-size: 17px;
+    .st-key-menu_fab [data-testid="stElementContainer"] {{
+        width: fit-content;
     }}
-    /* font-weight specifically needs the nested <p>, not just its
-       wrapper above - same "the real text lives one level deeper, with
-       its own competing style" issue already hit (and fixed the same
-       way) on the Menu/Log out buttons' own labels. */
-    .st-key-top_bar_identity [data-testid="stCaptionContainer"] p {{
-        font-weight: 700 !important;
-    }}
-    /* Menu: plain white icon, not a bordered button box - transparent
-       background so the bar's own blue fill (above) shows through.
-       Text label ("Navigation") and Log out's own text were both tried
-       and then dropped again - icon-only for both, back to how this
-       started. font-size bumped 30% (1.3rem -> 1.69rem) per user
-       request ("make menu icon larger 30%"). */
-    .st-key-menu_toggle_btn button {{
-        background: transparent !important;
-        border: none !important;
-        box-shadow: none !important;
+    .st-key-menu_fab button {{
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background-color: {PAL['accent']};
         color: {PAL['on_accent']};
-        font-size: 1.69rem;
-        padding: 0.2rem 0.4rem;
-    }}
-    /* Log out: the inline SVG "door with an exit arrow" icon (the
-       standard logout glyph, e.g. Feather/Lucide's own "log-out" icon)
-       as a background-image, not the 🚪 door EMOJI first tried here -
-       that rendered as a plain placeholder box (confirmed live, even
-       on this Windows-flagged browser), a real risk of the same
-       failure for at least some viewers rather than a guaranteed
-       cross-platform glyph. An SVG baked directly into the CSS doesn't
-       depend on any emoji font being installed at all. The button's
-       own text ("Logout") stays in the DOM for accessibility - only
-       hidden visually (color:transparent), not removed. */
-    .st-key-logout_btn button {{
-        background-color: transparent !important;
-        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4'/><polyline points='16 17 21 12 16 7'/><line x1='21' y1='12' x2='9' y2='12'/></svg>");
-        background-repeat: no-repeat;
-        background-position: center;
-        background-size: 20px 20px;
-        border: none !important;
-        box-shadow: none !important;
-        color: transparent;
-        width: 32px;
-        min-width: 0 !important;
-        height: 32px;
+        font-size: 1.5rem;
+        border: none;
+        box-shadow: 0 4px 14px {PAL['border_18']};
         padding: 0;
     }}
+    /* Logout, now a plain row at the bottom of the drawer (see
+       app.py) instead of its own top-bar icon - same full-width
+       rectangle styling as every other drawer button, so it reads as
+       one more item in the list rather than a special case. */
+    .st-key-logout_btn button {{
+        width: 100%;
+        justify-content: flex-start;
+        border-radius: 0;
+    }}
 
-    /* Left nav drawer (Quiz Me / Add Word / My Words / Progress) - only
-       actually rendered (see app.py) while st.session_state["nav_open"]
-       is True, so this CSS only has to style it, not hide/show it.
-       position:fixed makes it overlay the page rather than push
-       content over, which sidesteps needing real flex/grid page-level
-       layout just to make room for a collapsible column. */
+    /* Right-side nav drawer (Quiz Me / Add Word / My Words / Progress) -
+       only actually rendered (see app.py) while
+       st.session_state["nav_open"] is True, so this CSS only has to
+       style it, not hide/show it. position:fixed makes it overlay the
+       page rather than push content over, which sidesteps needing
+       real flex/grid page-level layout just to make room for a
+       collapsible column. Opens from the right (was the left) to sit
+       under the floating Menu button, which is bottom-right - a
+       user-settings toggle to flip both to the left together is a
+       planned follow-up, not built yet. */
     .st-key-nav_sidebar {{
         position: fixed;
         top: 0;
-        left: 0;
+        right: 0;
         height: 100vh;
         /* 40% narrower than the original 240px. No horizontal padding
            here at all (unlike the original, which had 1rem both
@@ -604,7 +558,7 @@ st.markdown(
            row instead. */
         width: min(144px, 80vw);
         background: {PAL['surface']};
-        box-shadow: 2px 0 16px {PAL['border_18']};
+        box-shadow: -2px 0 16px {PAL['border_18']};
         z-index: 3000;
         /* Top padding well past 60px - Streamlit's own native toolbar
            (Deploy/Stop/⋮) is a fixed-position element covering roughly
@@ -979,10 +933,12 @@ def _uid() -> str:
     return st.session_state["user_id"]
 
 
-# Navigation: a Menu button in the top bar toggles a left-side drawer
-# (see .st-key-nav_sidebar CSS) listing the same 4 sections that used
-# to be st.tabs() - replaced because the ask was specifically for a
-# hamburger-menu drawer, not a tab bar. current_page drives which
+# Navigation: a floating Menu button (bottom-right - see .st-key-
+# menu_fab CSS; the old full-width top bar it replaced is gone
+# entirely) toggles a right-side drawer (see .st-key-nav_sidebar CSS)
+# listing the same 4 sections that used to be st.tabs() - replaced
+# because the ask was specifically for a hamburger-menu drawer, not a
+# tab bar. current_page drives which
 # section's code runs below (each former `with tab_x:` block is now
 # `if st.session_state["current_page"] == "X":`, otherwise unchanged -
 # a plain if still only executes the matching section's body, so the
@@ -1006,19 +962,8 @@ def _select_page(page):
     st.session_state["nav_open"] = False
 
 
-def _display_identity() -> str:
-    """The Settings-page alias, if the user's set one - otherwise their
-    email. Checked on every rerun (one cheap query) rather than cached,
-    so saving a new alias in Settings is reflected here immediately."""
-    alias = db.get_user_settings(_uid())["alias"]
-    return alias if alias else st.session_state["user_id"]
-
-
-with st.container(key="top_bar"):
+with st.container(key="menu_fab"):
     st.button("☰", key="menu_toggle_btn", on_click=_toggle_nav)
-    with st.container(key="top_bar_identity"):
-        st.caption(f"Welcome {_display_identity()}!")
-    st.button("Logout", key="logout_btn", on_click=st.logout)
 
 if st.session_state["nav_open"]:
     with st.container(key="nav_sidebar"):
@@ -1052,6 +997,15 @@ if st.session_state["nav_open"]:
                 type="primary" if _page == st.session_state["current_page"] else "secondary",
                 use_container_width=True,
             )
+        # Logout - moved here from the old top bar (now removed entirely,
+        # per user request) rather than its own separate floating
+        # control. Same divider treatment as the one above Settings.
+        st.markdown(
+            f"<hr style='margin: 0; border: none; "
+            f"border-top: 1px solid {PAL['border_15']};'>",
+            unsafe_allow_html=True,
+        )
+        st.button("Logout", key="logout_btn", on_click=st.logout, use_container_width=True)
 
 def _definition_senses(definition: str) -> list[str]:
     """dictionary.py's lookup_word() joins up to 3 senses with "\n" -
@@ -2331,36 +2285,57 @@ if st.session_state["current_page"] == "Settings":
 # ------------------------------------------------------------
 if st.session_state["current_page"] == "About":
     st.subheader("About vocapp")
-    with st.container(key="about_scroll"):
-        st.markdown(
-            """
-**Quiz Me** — Your daily practice queue. The app serves a word that's
-due for review under a spaced-repetition schedule: type your own
-definition from memory, get it graded, and see exactly what you got
-right and missed. Answer well and a word's next review stretches
-further out; miss it and it comes back sooner.
 
-**Add Word** — Look up any word to see its definition, part of speech,
-pronunciation, synonyms and antonyms, real usage examples, etymology,
-and how its usage has trended over time - then add it to your list
-with one click.
+    # One dropdown, one section shown at a time - per user request
+    # (app_ideas #16, "make each tab a dropdown, where you can select
+    # to find details") - replaces the old single long scroll of every
+    # section's text stacked together.
+    ABOUT_SECTIONS = {
+        "Quiz Me": """
+Your daily practice queue. The app serves a word that's due for review
+under a spaced-repetition schedule: type your own definition from
+memory, get it graded, and see exactly what you got right and missed.
+Answer well and a word's next review stretches further out; miss it
+and it comes back sooner.
+""",
+        "Add Word": """
+Look up any word to see its definition, part of speech, pronunciation,
+synonyms and antonyms, real usage examples, etymology, and how its
+usage has trended over time - then add it to your list with one click.
+""",
+        "My Words": """
+Every word you've added, with your accuracy history and next review
+date, plus search, sort, and filter tools. Delete words you no longer
+want to study.
+""",
+        "Progress": """
+Your overall stats at a glance: how many words are Mastered, Learning,
+or Needs Work, your quiz streak, and a chart of your daily accuracy
+and quiz volume over time.
 
-**My Words** — Every word you've added, with your accuracy history and
-next review date, plus search, sort, and filter tools. Delete words
-you no longer want to study.
-
-**Progress** — Your overall stats at a glance: how many words are
-Mastered, Learning, or Needs Work, your quiz streak, and a chart of
-your daily accuracy and quiz volume over time.
-
-**Settings** — Personalize your account: a short display alias, your
-daily word target for the Progress streak, and preferences for
+**What the three categories mean:**
+- **Mastered** — a real streak: quizzed correctly enough times in a
+  row to advance the spaced-repetition schedule 3+ steps, with 80%+
+  average accuracy.
+- **Needs Work** — average accuracy below 60%, regardless of how many
+  times it's been quizzed.
+- **Learning** — everything else: not yet quizzed, or making progress
+  but hasn't cleared Mastered's streak-and-accuracy bar yet.
+""",
+        "Settings": """
+Personalize your account: a short display alias, your daily word
+target for the Progress streak, Dark Mode, and preferences for
 community word sharing and progress visibility.
-
-**App Ideas** — Have a suggestion? Type it here. Every idea is saved
-and reviewed to help decide what to build next.
-            """
-        )
+""",
+        "App Ideas": """
+Have a suggestion? Type it here. Every idea is saved and reviewed to
+help decide what to build next.
+""",
+    }
+    st.session_state.setdefault("about_section", "Quiz Me")
+    st.selectbox("Section", list(ABOUT_SECTIONS.keys()), key="about_section", label_visibility="collapsed")
+    with st.container(key="about_scroll"):
+        st.markdown(ABOUT_SECTIONS[st.session_state["about_section"]])
 
 # ------------------------------------------------------------
 # App Ideas
