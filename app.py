@@ -1027,7 +1027,7 @@ if st.session_state["nav_open"]:
             # regular asset is navy-on-transparent, drawn for a white
             # drawer, and its "voc" half turned near-illegible against
             # a dark one.
-            _logo_file = "vocapp_logo_dark_mode_transparent.png" if _DARK else "vocapp_with_text.png"
+            _logo_file = "vocapp_logo_dark_mode_transparent.png" if _DARK else "vocapp_with_text_1.png"
             st.image(str(IMAGES_DIR / _logo_file), width=125)
         for _page in _PAGES:
             st.button(
