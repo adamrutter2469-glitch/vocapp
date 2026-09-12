@@ -309,6 +309,24 @@ st.markdown(
         max-width: 80%;
         margin: 0 auto;
     }}
+    /* Checkbox + expander staying on ONE line, even on a phone-width
+       viewport (app_ideas #21 - "checkbox by word and word dropdown on
+       two separate lines" on mobile). Streamlit's own stColumn/
+       stHorizontalBlock CSS carries a real @media rule below a phone-
+       width breakpoint that sets flex-wrap:wrap and a near-100% column
+       min-width - sensible for columns holding paragraph-length
+       content, but this row's two columns are always just a checkbox
+       and a compact expander header, never anything that needs a full
+       line to itself. min-width:0 removes the forced-wide floor;
+       flex-wrap:nowrap stops the wrap even though there's technically
+       "room" to wrap into (confirmed live at a 375px viewport: without
+       this, the checkbox rendered on its own line above the expander). */
+    [class*="st-key-word_row_"] [data-testid="stHorizontalBlock"] {{
+        flex-wrap: nowrap !important;
+    }}
+    [class*="st-key-word_row_"] [data-testid="stColumn"] {{
+        min-width: 0 !important;
+    }}
 
     /* My Words sticky-footer pagination arrows - dropped the "Prev"/"Next"
        text down to bare < > glyphs, bumped up so a single character still
