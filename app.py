@@ -71,6 +71,12 @@ PAL = {
     "border_18": "rgba(231, 236, 247, 0.25)" if _DARK else "rgba(0, 29, 86, 0.18)",
     "accent": "#0270FE",
     "accent_light": "#5BABFB",
+    # Progress chart's own bar fill - light blue reads fine against the
+    # dark bar-stroke/labels in light mode, but in Dark Mode both the
+    # bar and its white value labels/stroke ended up light-on-light
+    # (poor contrast, per user feedback) - a darker blue fill fixes
+    # that while keeping the labels/stroke white.
+    "bar_fill": "#0270FE" if _DARK else "#5BABFB",
     "accent_tint": "#16233D" if _DARK else "#EAF2FE",
     "danger": "#E57373" if _DARK else "#C94A4A",
     "success": "#4CD787" if _DARK else "#1E9E64",
@@ -804,7 +810,7 @@ st.markdown(
     .st-key-progress_chart_legend .cl-swatch-bar {{
         display: inline-block;
         width: 14px; height: 10px; border-radius: 2px;
-        background: {PAL['accent_light']};
+        background: {PAL['bar_fill']};
         border-top: 2px solid {PAL['text']};
         vertical-align: middle;
     }}
@@ -888,10 +894,49 @@ st.markdown(
     [data-testid="stPopoverBody"] label {{
         color: {PAL['text']} !important;
     }}
-    [data-testid="stBaseButton-secondary"] {{
+    [data-testid="stBaseButton-secondary"], [data-testid="stPopoverButton"] {{
         background-color: {PAL['surface']};
         color: {PAL['text']};
         border-color: {PAL['border_15']};
+    }}
+    /* Every widget's own title/caption-of-a-label text (Alias, Idea
+       Type, Daily Word Target, ...) is hardcoded dark navy regardless
+       of theme (confirmed live) - a more specific rule than .stApp's
+       own inherited color above, so it needs its own override. Covers
+       every widget type at once since they all share this one
+       component. */
+    [data-testid="stWidgetLabel"] p {{
+        color: {PAL['text']} !important;
+    }}
+    /* The (?) help-tooltip icon next to a label (Alias) - an inline
+       SVG using stroke="currentColor", so recoloring the icon's own
+       `color` is what actually changes what's drawn. */
+    [data-testid="stTooltipIcon"] svg {{
+        color: {PAL['text']} !important;
+    }}
+    /* Placeholder text ("Type your definition...", the My Words/Add
+       Word search boxes, the App Ideas textarea) - browser-default
+       placeholder styling is a fixed dark gray/navy tint regardless of
+       the input's own (already-fixed, above) text color. */
+    [data-testid="stTextInput"] input::placeholder,
+    [data-testid="stTextArea"] textarea::placeholder {{
+        color: {PAL['text']} !important;
+        opacity: 0.7;
+    }}
+    /* Radio option labels OUTSIDE a popover (Progress' Last 3 weeks/
+       All time) - same hardcoded-dark-navy issue as stWidgetLabel
+       above, different component. The popover-scoped version of this
+       same fix already exists a few rules up (My Words' Filter/Sort);
+       this is the same rule for a bare st.radio on the page itself. */
+    [data-testid="stRadio"] label {{
+        color: {PAL['text']} !important;
+    }}
+    /* Add Word's Definition/Thesaurus/Examples/Advanced tabs - the
+       SELECTED tab already uses the brand blue (reads fine on both
+       backgrounds unchanged), but an unselected one is hardcoded dark
+       navy. */
+    [role="tab"][aria-selected="false"] {{
+        color: {PAL['text']} !important;
     }}
     [data-testid="stExpander"] {{
         border: 1px solid {PAL['border_15']};
@@ -2145,7 +2190,7 @@ if st.session_state["current_page"] == "Progress":
                 # Light blue fill / dark blue stroke - swapped from the
                 # original dark fill / light stroke per user request
                 # ("bars...light blue, labels dark blue").
-                .mark_bar(color=PAL['accent_light'], stroke=PAL['text'], strokeWidth=1, size=BAR_STEP_PX,
+                .mark_bar(color=PAL['bar_fill'], stroke=PAL['text'], strokeWidth=1, size=BAR_STEP_PX,
                           cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
                 .encode(
                     x=date_x,
