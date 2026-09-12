@@ -844,8 +844,12 @@ st.markdown(
        live: rgb(0, 29, 86)) even with stPopoverBody's own color rule
        above already in place - some more specific Streamlit rule was
        still winning despite both being !important. Targeted directly
-       rather than chasing that specificity further. */
-    [data-testid="stPopoverBody"] label {{
+       rather than chasing that specificity further, and - per the
+       same nested-<p> issue found on Progress' own bare st.radio -
+       the <p> inside gets its own explicit rule too rather than
+       trusting inheritance from the label. */
+    [data-testid="stPopoverBody"] label,
+    [data-testid="stPopoverBody"] label p {{
         color: {PAL['text']} !important;
     }}
     [data-testid="stBaseButton-secondary"], [data-testid="stPopoverButton"] {{
@@ -881,8 +885,16 @@ st.markdown(
        All time) - same hardcoded-dark-navy issue as stWidgetLabel
        above, different component. The popover-scoped version of this
        same fix already exists a few rules up (My Words' Filter/Sort);
-       this is the same rule for a bare st.radio on the page itself. */
-    [data-testid="stRadio"] label {{
+       this is the same rule for a bare st.radio on the page itself.
+       Both the label AND its nested <p> are targeted - the label rule
+       alone looked right in getComputedStyle but NOT visually
+       (confirmed live): the actual visible glyphs live in that nested
+       <p>, which carries its own separate hardcoded color winning over
+       the label's, same "real text lives one level deeper" issue
+       already hit and fixed elsewhere in this file (the top bar's old
+       identity caption, the Menu/Logout buttons' own labels). */
+    [data-testid="stRadio"] label,
+    [data-testid="stRadio"] label p {{
         color: {PAL['text']} !important;
     }}
     /* Add Word's Definition/Thesaurus/Examples/Advanced tabs - the
