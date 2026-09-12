@@ -36,6 +36,48 @@ st.set_page_config(
     layout="centered",
 )
 
+
+def _dark_mode_enabled() -> bool:
+    """Whether to render the dark palette for this run. Has to work
+    BEFORE auth.require_login() actually runs (the CSS block below is
+    built first, so the alternative is a flash of the wrong theme on
+    every single rerun) - st.user itself is populated by Streamlit's
+    own OIDC middleware independently of whether our own auth check has
+    run yet, so it's safe to read here. Not logged in yet (or not
+    invited) just means "light" - there's no per-user setting to read
+    for someone auth.require_login() would stop anyway."""
+    if not st.user.is_logged_in:
+        return False
+    return db.get_user_settings(st.user.email)["dark_mode"]
+
+
+_DARK = _dark_mode_enabled()
+# One named palette, light or dark - every color in this file's CSS and
+# Python-built markup (chart colors, badges, the donut) reads from this
+# instead of a hardcoded literal, so dark mode is a single flip here
+# rather than two parallel copies of every rule. Light values are
+# exactly what this file used unconditionally before dark mode existed;
+# dark values are new. accent/accent_light/on_accent stay identical in
+# both - the brand blue and the white drawn on top of it already read
+# fine against a dark surface, confirmed live.
+PAL = {
+    "bg": "#0B1220" if _DARK else "#FFFFFF",
+    "surface": "#141C2E" if _DARK else "#FFFFFF",
+    "text": "#E7ECF7" if _DARK else "#001D56",
+    "text_55": "rgba(231, 236, 247, 0.55)" if _DARK else "rgba(0, 29, 86, 0.55)",
+    "text_65": "rgba(231, 236, 247, 0.65)" if _DARK else "rgba(0, 29, 86, 0.65)",
+    "border_08": "rgba(231, 236, 247, 0.08)" if _DARK else "rgba(0, 29, 86, 0.08)",
+    "border_15": "rgba(231, 236, 247, 0.18)" if _DARK else "rgba(0, 29, 86, 0.15)",
+    "border_18": "rgba(231, 236, 247, 0.25)" if _DARK else "rgba(0, 29, 86, 0.18)",
+    "accent": "#0270FE",
+    "accent_light": "#5BABFB",
+    "accent_tint": "#16233D" if _DARK else "#EAF2FE",
+    "danger": "#E57373" if _DARK else "#C94A4A",
+    "success": "#4CD787" if _DARK else "#1E9E64",
+    "muted": "#8CA0C7" if _DARK else "#94A6CC",
+    "on_accent": "#FFFFFF",
+}
+
 # Custom CSS, scoped to specific elements via Streamlit's key -> CSS-class
 # feature (any element/container given key="foo" gets a "st-key-foo" class
 # on its wrapper - see https://docs.streamlit.io, "Style using CSS"). This
@@ -132,7 +174,7 @@ st.markdown(
     }}
     [class*="st-key-defword_"] button:hover {{
         text-decoration: underline;
-        color: #0270FE;
+        color: {PAL['accent']};
     }}
     /* st.popover renders its own "expand_more" chevron glyph next to the
        label by default - hidden here so a word looks like plain text
@@ -218,7 +260,7 @@ st.markdown(
         min-width: 160px !important;
     }}
     [class*="st-key-trend_stat_peak_"], [class*="st-key-trend_stat_low_"] {{
-        border: 1px solid rgba(0, 29, 86, 0.15);
+        border: 1px solid {PAL['border_15']};
         border-radius: 8px;
         padding: 0.5rem 0.9rem;
         min-width: 96px;
@@ -242,7 +284,7 @@ st.markdown(
         text-transform: uppercase;
         letter-spacing: 0.06em;
         font-weight: 700;
-        color: rgba(0, 29, 86, 0.55);
+        color: {PAL['text_55']};
     }}
     [class*="st-key-trend_stat_peak_"] .stat-value,
     [class*="st-key-trend_stat_low_"] .stat-value {{
@@ -255,18 +297,18 @@ st.markdown(
        the other two are bare facts read off the chart, this one is a
        computed judgment call (see trends.trend_summary's FLAT_THRESHOLD_PCT). */
     [class*="st-key-trend_note_"] {{
-        border: 1px solid rgba(0, 29, 86, 0.15);
-        border-left: 3px solid #5BABFB;
+        border: 1px solid {PAL['border_15']};
+        border-left: 3px solid {PAL['accent_light']};
         border-radius: 8px;
         padding: 0.5rem 0.9rem;
-        background: #EAF2FE;
+        background: {PAL['accent_tint']};
         /* Same under-reported-inner-wrapper issue and same fix as the
            stat cards above - the direction sentence and the per-
            million detail line are two lines inside one markdown call. */
         min-height: 58px;
     }}
     [class*="st-key-trend_note_"] .trend-arrow {{
-        color: #0270FE;
+        color: {PAL['accent']};
         margin-right: 0.3rem;
     }}
     [class*="st-key-trend_note_"] .trend-direction {{
@@ -276,7 +318,7 @@ st.markdown(
         display: block;
         margin-top: 0.15rem;
         font-size: 11.5px;
-        color: rgba(0, 29, 86, 0.65);
+        color: {PAL['text_65']};
         font-variant-numeric: tabular-nums;
     }}
     [class*="st-key-trend_note_"] [data-testid="stMarkdown"] p {{
@@ -350,9 +392,9 @@ st.markdown(
         max-width: 736px;
         margin: 0 auto;
         padding: 0.5rem 1rem;
-        background: #FFFFFF;
-        border-top: 1px solid rgba(0, 29, 86, 0.15);
-        box-shadow: 0 -2px 10px rgba(0, 29, 86, 0.08);
+        background: {PAL['surface']};
+        border-top: 1px solid {PAL['border_15']};
+        box-shadow: 0 -2px 10px {PAL['border_08']};
     }}
     /* Center the </Prev  page-info  Next> cluster as a group in the
        footer, instead of Prev/Next stretching to the footer's edges with
@@ -459,7 +501,7 @@ st.markdown(
            .streamlit/config.toml (#0270FE) is a theme token Streamlit
            applies through its own internal styling, not something this
            file's own CSS can just reference by name. */
-        background-color: #0270FE;
+        background-color: {PAL['accent']};
         /* 0.42rem, not the original 0.6rem - measured live (59.2px
            tall beforehand) and picked to land the bar's total height
            at ~90% of that, not just an eyeballed smaller number.
@@ -487,7 +529,7 @@ st.markdown(
            caption styling otherwise sets its own muted grey via a more
            specific rule, hence !important. 17px is 14px (this
            caption's own previous size, measured live) + ~20%. */
-        color: #FFFFFF !important;
+        color: {PAL['on_accent']} !important;
         font-size: 17px;
     }}
     /* font-weight specifically needs the nested <p>, not just its
@@ -507,7 +549,7 @@ st.markdown(
         background: transparent !important;
         border: none !important;
         box-shadow: none !important;
-        color: #FFFFFF;
+        color: {PAL['on_accent']};
         font-size: 1.69rem;
         padding: 0.2rem 0.4rem;
     }}
@@ -555,8 +597,8 @@ st.markdown(
            adds its own left/right padding back just for the logo/✕
            row instead. */
         width: min(144px, 80vw);
-        background: #FFFFFF;
-        box-shadow: 2px 0 16px rgba(0, 29, 86, 0.18);
+        background: {PAL['surface']};
+        box-shadow: 2px 0 16px {PAL['border_18']};
         z-index: 3000;
         /* Top padding well past 60px - Streamlit's own native toolbar
            (Deploy/Stop/⋮) is a fixed-position element covering roughly
@@ -617,7 +659,7 @@ st.markdown(
     .st-key-about_scroll {{
         max-height: 55vh;
         overflow-y: auto;
-        border: 1px solid rgba(0, 29, 86, 0.15);
+        border: 1px solid {PAL['border_15']};
         border-radius: 8px;
         padding: 1rem 1.25rem;
     }}
@@ -636,7 +678,7 @@ st.markdown(
         flex-direction: column;
         align-items: center;
         text-align: center;
-        border: 1px solid rgba(0, 29, 86, 0.15);
+        border: 1px solid {PAL['border_15']};
         border-radius: 10px;
         padding: 16px 18px;
         min-height: 300px;
@@ -660,7 +702,7 @@ st.markdown(
         top: 18px; left: 18px;
         width: 112px; height: 112px;
         border-radius: 50%;
-        background: #FFFFFF;
+        background: {PAL['surface']};
         flex-direction: column;
         align-items: center;
         justify-content: center;
@@ -675,7 +717,7 @@ st.markdown(
     .st-key-progress_donut_card .donut-lbl {{
         display: block;
         font-size: 10.5px;
-        color: rgba(0, 29, 86, 0.55);
+        color: {PAL['text_55']};
         text-transform: uppercase;
         letter-spacing: 0.05em;
         margin-top: 3px;
@@ -693,14 +735,14 @@ st.markdown(
         display: inline-block;
         width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
     }}
-    .st-key-progress_donut_card .dl-lbl {{ color: rgba(0, 29, 86, 0.65); flex: 1; text-align: left; }}
+    .st-key-progress_donut_card .dl-lbl {{ color: {PAL['text_65']}; flex: 1; text-align: left; }}
     .st-key-progress_donut_card .dl-val {{ font-weight: 700; font-variant-numeric: tabular-nums; }}
 
     /* Progress tab: streak / average-accuracy stat cards, right of the
        donut - same span-based single-call approach and min-height
        safety net as the donut card above. */
     .st-key-progress_streak_card, .st-key-progress_accuracy_card {{
-        border: 1px solid rgba(0, 29, 86, 0.15);
+        border: 1px solid {PAL['border_15']};
         border-radius: 10px;
         padding: 16px 18px;
         min-height: 90px;
@@ -708,7 +750,7 @@ st.markdown(
         flex-direction: column;
         justify-content: center;
     }}
-    .st-key-progress_streak_card {{ border-color: #5BABFB; margin-bottom: 14px; }}
+    .st-key-progress_streak_card {{ border-color: {PAL['accent_light']}; margin-bottom: 14px; }}
     .st-key-progress_streak_card .stat-top, .st-key-progress_accuracy_card .stat-top {{
         display: flex;
         align-items: baseline;
@@ -725,7 +767,7 @@ st.markdown(
         display: block;
         font-size: 12px;
         font-weight: 700;
-        color: rgba(0, 29, 86, 0.55);
+        color: {PAL['text_55']};
         text-transform: uppercase;
         letter-spacing: 0.05em;
         margin-top: 6px;
@@ -733,7 +775,7 @@ st.markdown(
     .st-key-progress_streak_card .stat-note {{
         display: block;
         font-size: 11.5px;
-        color: rgba(0, 29, 86, 0.55);
+        color: {PAL['text_55']};
         margin-top: 3px;
         line-height: 1.4;
     }}
@@ -757,23 +799,116 @@ st.markdown(
         gap: 6px;
         margin-right: 20px;
         font-size: 12px;
-        color: rgba(0, 29, 86, 0.65);
+        color: {PAL['text_65']};
     }}
     .st-key-progress_chart_legend .cl-swatch-bar {{
         display: inline-block;
         width: 14px; height: 10px; border-radius: 2px;
-        background: #5BABFB;
-        border-top: 2px solid #001D56;
+        background: {PAL['accent_light']};
+        border-top: 2px solid {PAL['text']};
         vertical-align: middle;
     }}
     .st-key-progress_chart_legend .cl-swatch-line {{
         display: inline-block;
         width: 16px; height: 2.5px;
-        background: #001D56;
+        background: {PAL['text']};
         border-radius: 2px;
         vertical-align: middle;
     }}
 
+    /* Dark Mode (Settings) - repaints Streamlit's OWN native chrome,
+       not just this file's own .st-key-* elements above. This
+       Streamlit version doesn't expose its theme as CSS custom
+       properties (confirmed live - getComputedStyle on html/body/
+       .stApp returned "" for every standard Streamlit theme variable
+       name) and builds its selectbox on React Aria Components, not
+       BaseWeb (confirmed live - [data-baseweb="..."] matches nothing
+       at all here; the real hooks are role="combobox"/"listbox"/
+       "option" and a handful of data-testid's) - every rule below
+       targets one of those instead. In light mode every PAL value
+       here is identical to what these elements already rendered as,
+       so this whole block is a no-op then - safe to leave unguarded
+       rather than doubling every rule behind an `if _DARK`. */
+    [data-testid="stAppViewContainer"], [data-testid="stMain"], [data-testid="stHeader"] {{
+        background-color: {PAL['bg']};
+    }}
+    /* color, not each individual heading/paragraph/label selector -
+       every plain-text element in the app inherits from this unless a
+       more specific rule (several above) already sets its own color. */
+    .stApp {{
+        color: {PAL['text']};
+    }}
+    [data-testid="stTextInput"] input,
+    [data-testid="stTextArea"] textarea,
+    [data-testid="stNumberInput"] input {{
+        background-color: {PAL['surface']} !important;
+        color: {PAL['text']} !important;
+        border-color: {PAL['border_15']} !important;
+    }}
+    /* The selectbox's own closed control - a plain <input> (confirmed
+       live: no [data-baseweb], this Streamlit version's combobox is
+       React Aria) sitting inside a div that carries the actual visible
+       fill color. :has() picks out exactly that wrapper rather than
+       every div inside stSelectbox. */
+    [data-testid="stSelectbox"] div:has(> input) {{
+        background-color: {PAL['surface']} !important;
+    }}
+    [data-testid="stSelectbox"] input {{
+        color: {PAL['text']} !important;
+    }}
+    /* The open dropdown list renders in a portal at the end of <body>,
+       outside .stApp entirely (confirmed live) - its own rule is what
+       needs the color override, .stApp's inherited color above never
+       reaches it. Targeted the same React-Aria way: the panel is
+       [role="listbox"]'s own parent, not the listbox element itself. */
+    div:has(> [role="listbox"]) {{
+        background-color: {PAL['surface']} !important;
+    }}
+    [role="option"] {{
+        color: {PAL['text']} !important;
+    }}
+    [role="option"]:hover {{
+        background-color: {PAL['accent_tint']} !important;
+    }}
+    /* st.popover's own body (My Words' Filter/Sort, every clickable
+       definition word's Look up/Add) - a real, working data-testid in
+       this version (already relied on elsewhere in this file, for its
+       width), unlike the BaseWeb ones above. Also a portal, same
+       reasoning as the listbox panel. */
+    [data-testid="stPopoverBody"] {{
+        background-color: {PAL['surface']} !important;
+        color: {PAL['text']} !important;
+    }}
+    /* The radio/checkbox LABEL text inside a popover (My Words' own
+       Filter options) still rendered hardcoded dark navy (confirmed
+       live: rgb(0, 29, 86)) even with stPopoverBody's own color rule
+       above already in place - some more specific Streamlit rule was
+       still winning despite both being !important. Targeted directly
+       rather than chasing that specificity further. */
+    [data-testid="stPopoverBody"] label {{
+        color: {PAL['text']} !important;
+    }}
+    [data-testid="stBaseButton-secondary"] {{
+        background-color: {PAL['surface']};
+        color: {PAL['text']};
+        border-color: {PAL['border_15']};
+    }}
+    [data-testid="stExpander"] {{
+        border: 1px solid {PAL['border_15']};
+        border-radius: 8px;
+    }}
+    [data-testid="stExpander"] summary {{
+        color: {PAL['text']};
+    }}
+    /* Streamlit's own :focus highlight on an expander's summary is a
+       hardcoded near-white (confirmed live via document.activeElement -
+       a real focus style, not the translucent open-state overlay a few
+       rules up) - stayed a stark, jarring white box over Dark Mode's
+       dark card even after that overlay got its own dark equivalent. */
+    [data-testid="stExpander"] summary:focus,
+    [data-testid="stExpander"] summary:focus-visible {{
+        background-color: {PAL['accent_tint']} !important;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -843,7 +978,12 @@ with st.container(key="top_bar"):
 if st.session_state["nav_open"]:
     with st.container(key="nav_sidebar"):
         with st.container(key="nav_header_row"):
-            st.image(str(IMAGES_DIR / "vocapp_with_text.png"), width=125)
+            # Dedicated white-on-transparent logo for Dark Mode - the
+            # regular asset is navy-on-transparent, drawn for a white
+            # drawer, and its "voc" half turned near-illegible against
+            # a dark one.
+            _logo_file = "vocapp_logo_dark_mode.png" if _DARK else "vocapp_with_text.png"
+            st.image(str(IMAGES_DIR / _logo_file), width=125)
         for _page in _PAGES:
             st.button(
                 _page, key=f"nav_btn_{_page}", on_click=_select_page, args=(_page,),
@@ -857,8 +997,8 @@ if st.session_state["nav_open"]:
         # child of that flex column, so its own margin was the actual
         # source of the visible gap above Settings).
         st.markdown(
-            "<hr style='margin: 0; border: none; "
-            "border-top: 1px solid rgba(0, 29, 86, 0.15);'>",
+            f"<hr style='margin: 0; border: none; "
+            f"border-top: 1px solid {PAL['border_15']};'>",
             unsafe_allow_html=True,
         )
         for _page in _UTILITY_PAGES:
@@ -1158,8 +1298,8 @@ _FEEDBACK_WRONG_RE = re.compile(r"&lt;wrong&gt;(.*?)&lt;/wrong&gt;", re.DOTALL)
 
 def _render_grading_feedback(feedback: str):
     escaped = html.escape(feedback)
-    escaped = _FEEDBACK_RIGHT_RE.sub(r"<b style='color:#1E9E64;'>\1</b>", escaped)
-    escaped = _FEEDBACK_WRONG_RE.sub(r"<b style='color:#C94A4A;'>\1</b>", escaped)
+    escaped = _FEEDBACK_RIGHT_RE.sub(rf"<b style='color:{PAL['success']};'>\1</b>", escaped)
+    escaped = _FEEDBACK_WRONG_RE.sub(rf"<b style='color:{PAL['danger']};'>\1</b>", escaped)
     st.markdown(escaped, unsafe_allow_html=True)
 
 
@@ -1196,7 +1336,7 @@ if st.session_state["current_page"] == "Quiz Me":
             c_word, c_next = st.columns([3, 1])
             with c_word:
                 with st.container(key="word_header_row_quiz_active"):
-                    speaker.word_header(word_row["word"], word_row.get("audio_url", ""))
+                    speaker.word_header(word_row["word"], word_row.get("audio_url", ""), text_color=PAL['text'])
             with c_next:
                 if st.button("Next word →", key="next_word_btn_top"):
                     st.session_state.quiz_word = None
@@ -1206,7 +1346,7 @@ if st.session_state["current_page"] == "Quiz Me":
                     st.rerun()
         else:
             with st.container(key="word_header_row_quiz_pending"):
-                speaker.word_header(word_row["word"], word_row.get("audio_url", ""))
+                speaker.word_header(word_row["word"], word_row.get("audio_url", ""), text_color=PAL['text'])
 
         caption_bits = []
         if word_row["part_of_speech"]:
@@ -1353,7 +1493,9 @@ if st.session_state["current_page"] == "Add Word":
     if result:
         with st.container(key="addword_result"):
             with st.container(key="word_header_row_addword"):
-                speaker.word_header(st.session_state["addword_looked_up_word"], result.get("audio_url", ""))
+                speaker.word_header(
+                    st.session_state["addword_looked_up_word"], result.get("audio_url", ""), text_color=PAL['text'],
+                )
             meta_bits = [b for b in (result["part_of_speech"], result["phonetic"]) if b]
             if meta_bits:
                 st.caption("  •  ".join(meta_bits))
@@ -1526,10 +1668,21 @@ if st.session_state["current_page"] == "Add Word":
                     # grouping separator).
                     year_chart = (
                         alt.Chart(trend_df)
-                        .mark_line(color="#0270FE")
+                        .mark_line(color=PAL['accent'])
                         .encode(
                             x=alt.X("Year:Q", axis=alt.Axis(format="d"), title="Year"),
                             y=alt.Y("Uses per million words:Q", title="Uses per million words"),
+                        )
+                        # Unlike the Progress combo chart above (which
+                        # draws its own axis-free text layers), this one
+                        # uses Vega-Lite's real axes - configure_axis is
+                        # what recolors THEIR labels/titles/gridlines,
+                        # since they're drawn by Vega-Lite itself, not
+                        # this file's own CSS or markup.
+                        .properties(background=PAL['bg'])
+                        .configure_axis(
+                            labelColor=PAL['text_65'], titleColor=PAL['text_65'], gridColor=PAL['border_08'],
+                            domainColor=PAL['border_15'], tickColor=PAL['border_15'],
                         )
                     )
                     st.altair_chart(year_chart, use_container_width=True)
@@ -1815,26 +1968,26 @@ if st.session_state["current_page"] == "Progress":
                 st.markdown(
                     "<span class='donut-wrap'>"
                     f"<span class='donut' style='background: conic-gradient("
-                    f"#1E9E64 0% {mastered_pct:.3f}%, "
-                    f"#0270FE {mastered_pct:.3f}% {learning_end_pct:.3f}%, "
-                    f"#C94A4A {learning_end_pct:.3f}% 100%);'></span>"
+                    f"{PAL['success']} 0% {mastered_pct:.3f}%, "
+                    f"{PAL['accent']} {mastered_pct:.3f}% {learning_end_pct:.3f}%, "
+                    f"{PAL['danger']} {learning_end_pct:.3f}% 100%);'></span>"
                     "<span class='donut-hole'>"
                     f"<span class='donut-n'>{total}</span>"
                     "<span class='donut-lbl'>words</span>"
                     "</span>"
                     "</span>"
                     "<span class='dl-row'>"
-                    "<span class='dl-dot' style='background:#1E9E64;'></span>"
+                    f"<span class='dl-dot' style='background:{PAL['success']};'></span>"
                     "<span class='dl-lbl'>Mastered</span>"
                     f"<span class='dl-val'>{stats['mastered']}</span>"
                     "</span>"
                     "<span class='dl-row'>"
-                    "<span class='dl-dot' style='background:#0270FE;'></span>"
+                    f"<span class='dl-dot' style='background:{PAL['accent']};'></span>"
                     "<span class='dl-lbl'>Learning</span>"
                     f"<span class='dl-val'>{stats['learning']}</span>"
                     "</span>"
                     "<span class='dl-row'>"
-                    "<span class='dl-dot' style='background:#C94A4A;'></span>"
+                    f"<span class='dl-dot' style='background:{PAL['danger']};'></span>"
                     "<span class='dl-lbl'>Needs Work</span>"
                     f"<span class='dl-val'>{stats['needs_work']}</span>"
                     "</span>",
@@ -1992,7 +2145,7 @@ if st.session_state["current_page"] == "Progress":
                 # Light blue fill / dark blue stroke - swapped from the
                 # original dark fill / light stroke per user request
                 # ("bars...light blue, labels dark blue").
-                .mark_bar(color="#5BABFB", stroke="#001D56", strokeWidth=1, size=BAR_STEP_PX,
+                .mark_bar(color=PAL['accent_light'], stroke=PAL['text'], strokeWidth=1, size=BAR_STEP_PX,
                           cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
                 .encode(
                     x=date_x,
@@ -2005,7 +2158,7 @@ if st.session_state["current_page"] == "Progress":
                 alt.Chart(words_df)
                 # Dark blue, not white - the bar fill above is light now,
                 # so white text would no longer have enough contrast.
-                .mark_text(fontWeight="bold", fontSize=9, color="#001D56", angle=270)
+                .mark_text(fontWeight="bold", fontSize=9, color=PAL['text'], angle=270)
                 .encode(x=date_x, y=alt.Y("label_y:Q", axis=None, scale=shared_scale),
                         text=alt.Text("words_quizzed:Q"))
             )
@@ -2020,7 +2173,7 @@ if st.session_state["current_page"] == "Progress":
                 # is what caused the labels to visibly overlap the bars'
                 # bottom edge - measured a -1.2px gap, i.e. true overlap,
                 # at dx=-8). -15 leaves a clean ~6px gap below the bars.
-                .mark_text(dx=-15, fontSize=10, color="#94A6CC", angle=270)
+                .mark_text(dx=-15, fontSize=10, color=PAL['muted'], angle=270)
                 .encode(x=date_x, y=alt.Y("zero:Q", axis=None, scale=shared_scale), text=alt.Text("date_label:O"))
             )
             # Dark blue throughout (line, points, labels) - was the
@@ -2028,7 +2181,7 @@ if st.session_state["current_page"] == "Progress":
             # ("Line on line chart and labels of line chart dark blue").
             line = (
                 alt.Chart(acc_df)
-                .mark_line(color="#001D56", strokeWidth=2.5)
+                .mark_line(color=PAL['text'], strokeWidth=2.5)
                 .encode(
                     x=date_x,
                     y=alt.Y("plot_y:Q", axis=None, scale=shared_scale),
@@ -2038,17 +2191,22 @@ if st.session_state["current_page"] == "Progress":
             )
             line_points = (
                 alt.Chart(acc_df)
-                .mark_point(color="#001D56", filled=True, size=40)
+                .mark_point(color=PAL['text'], filled=True, size=40)
                 .encode(x=date_x, y=alt.Y("plot_y:Q", axis=None, scale=shared_scale))
             )
             line_labels = (
                 alt.Chart(acc_df)
-                .mark_text(dy=-10, fontWeight="bold", fontSize=11, color="#001D56")
+                .mark_text(dy=-10, fontWeight="bold", fontSize=11, color=PAL['text'])
                 .encode(x=date_x, y=alt.Y("plot_y:Q", axis=None, scale=shared_scale),
                         text=alt.Text("avg_accuracy:Q", format=".0f"))
             )
+            # background - Vega-Lite draws its own white canvas by
+            # default regardless of the surrounding page's CSS (a
+            # chart is an independent rendering target, not HTML this
+            # file's own styles reach) - confirmed live as a jarring
+            # white box in Dark Mode until this was added.
             combo = alt.layer(bar, bar_labels, date_labels_layer, line, line_points, line_labels).properties(
-                height=260, width=chart_width,
+                height=260, width=chart_width, background=PAL['bg'],
             )
             with st.container(key="progress_chart_scroll"):
                 st.altair_chart(combo, use_container_width=False)
@@ -2087,6 +2245,7 @@ if st.session_state["current_page"] == "Settings":
         "settings_share_progress", "Yes" if _settings["share_progress"] else "No"
     )
     st.session_state.setdefault("settings_daily_target", _settings["daily_word_target"])
+    st.session_state.setdefault("settings_dark_mode", "Yes" if _settings["dark_mode"] else "No")
 
     st.text_input(
         "Alias", key="settings_alias", max_chars=10,
@@ -2100,6 +2259,8 @@ if st.session_state["current_page"] == "Settings":
         "Daily Word Target", key="settings_daily_target", min_value=1, max_value=100, step=1,
     )
     st.caption("How many words a day counts toward your Progress tab streak.")
+    st.selectbox("Dark Mode", ["No", "Yes"], key="settings_dark_mode")
+    st.caption("Switch the whole app to a dark color scheme.")
 
     if st.button("Save Settings", type="primary"):
         db.save_user_settings(
@@ -2108,8 +2269,16 @@ if st.session_state["current_page"] == "Settings":
             st.session_state["settings_auto_add"] == "Yes",
             st.session_state["settings_share_progress"] == "Yes",
             st.session_state["settings_daily_target"],
+            st.session_state["settings_dark_mode"] == "Yes",
         )
         st.toast("Settings saved.", icon="✅")
+        # Dark Mode's own effect is the CSS built at the very top of this
+        # script run (PAL, read before Settings even renders) - a plain
+        # rerun is what picks up the new value, same as every other
+        # setting here, but this is the one where "you won't see it
+        # until the next rerun" would otherwise be confusing (no visual
+        # change on this same run despite the toast saying "saved").
+        st.rerun()
 
 # ------------------------------------------------------------
 # About

@@ -204,14 +204,17 @@ def _create_schema(con):
             alias                     TEXT,
             auto_add_community_words  BOOLEAN DEFAULT FALSE,
             share_progress            BOOLEAN DEFAULT FALSE,
-            daily_word_target         INTEGER DEFAULT 10
+            daily_word_target         INTEGER DEFAULT 10,
+            dark_mode                 BOOLEAN DEFAULT FALSE
         )
     """)
-    # daily_word_target was added after this table already existed in
-    # deployed DBs - see the same-shaped app_ideas migration below for
-    # why this needs its own ALTER (CREATE TABLE IF NOT EXISTS is a
-    # no-op against an existing table) and why it can't carry NOT NULL.
+    # daily_word_target/dark_mode were added after this table already
+    # existed in deployed DBs - see the same-shaped app_ideas migration
+    # below for why this needs its own ALTER (CREATE TABLE IF NOT
+    # EXISTS is a no-op against an existing table) and why it can't
+    # carry NOT NULL.
     con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS daily_word_target INTEGER DEFAULT 10")
+    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dark_mode BOOLEAN DEFAULT FALSE")
     con.execute("CREATE SEQUENCE IF NOT EXISTS app_idea_id_seq START 1")
     con.execute("""
         CREATE TABLE IF NOT EXISTS app_ideas (
@@ -734,18 +737,21 @@ def get_attempts(user_id: str, word: str):
 
 def get_user_settings(user_id: str) -> dict:
     """This user's saved Settings-page preferences. Defaults (blank
-    alias, both toggles off, a 10-word daily target) for a user who's
+    alias, all toggles off, a 10-word daily target) for a user who's
     never saved any yet, rather than None/crashing - Settings' own UI
     relies on always getting a real dict back."""
     con = get_connection()
     row = con.execute(
-        "SELECT alias, auto_add_community_words, share_progress, daily_word_target "
+        "SELECT alias, auto_add_community_words, share_progress, daily_word_target, dark_mode "
         "FROM user_settings WHERE user_id = ?",
         [user_id],
     ).fetchone()
     con.close()
     if row is None:
-        return {"alias": "", "auto_add_community_words": False, "share_progress": False, "daily_word_target": 10}
+        return {
+            "alias": "", "auto_add_community_words": False, "share_progress": False,
+            "daily_word_target": 10, "dark_mode": False,
+        }
     return {
         "alias": row[0] or "",
         "auto_add_community_words": bool(row[1]),
@@ -754,24 +760,28 @@ def get_user_settings(user_id: str) -> dict:
         # never-saved user (row is None above) - same 10-word fallback
         # either way.
         "daily_word_target": row[3] if row[3] is not None else 10,
+        "dark_mode": bool(row[4]),
     }
 
 
 def save_user_settings(
-    user_id: str, alias: str, auto_add_community_words: bool, share_progress: bool, daily_word_target: int = 10,
+    user_id: str, alias: str, auto_add_community_words: bool, share_progress: bool,
+    daily_word_target: int = 10, dark_mode: bool = False,
 ):
     con = get_connection()
     con.execute(
         """
-        INSERT INTO user_settings (user_id, alias, auto_add_community_words, share_progress, daily_word_target)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO user_settings
+            (user_id, alias, auto_add_community_words, share_progress, daily_word_target, dark_mode)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT (user_id) DO UPDATE SET
             alias = EXCLUDED.alias,
             auto_add_community_words = EXCLUDED.auto_add_community_words,
             share_progress = EXCLUDED.share_progress,
-            daily_word_target = EXCLUDED.daily_word_target
+            daily_word_target = EXCLUDED.daily_word_target,
+            dark_mode = EXCLUDED.dark_mode
         """,
-        [user_id, alias.strip()[:10], auto_add_community_words, share_progress, daily_word_target],
+        [user_id, alias.strip()[:10], auto_add_community_words, share_progress, daily_word_target, dark_mode],
     )
     con.close()
     r2_storage.upload_db()
