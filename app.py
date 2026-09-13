@@ -1385,18 +1385,23 @@ def _save(word, info, clear_search=True):
     # duplicating, which is useful for corrections. But that also means
     # accidentally re-adding a word you forgot you already had silently
     # "succeeds" with no sign anything was different - check first so
-    # the message can tell those two cases apart.
-    already_had_it = db.get_word(_uid(), word) is not None
+    # the message can tell apart new/already-had-it/reactivated (fetched
+    # BEFORE add_word runs, since add_word's own ON CONFLICT now flips
+    # active back to TRUE - app_ideas #21 - so this is the only chance
+    # to see whether it WAS inactive going in).
+    existing = db.get_word(_uid(), word)
     db.add_word(
         _uid(), word, info["definition"], info["part_of_speech"], info["example"],
         info["synonyms"], info["phonetic"], info["audio_url"],
         info["antonyms"], info["etymology"],
     )
     _reset_form_after_add(clear_search=clear_search)
-    if already_had_it:
-        _set_msg("warning", f"**{word}** is already in your list.")
-    else:
+    if existing is None:
         _set_msg("success", f"Added **{word}**.")
+    elif not existing["active"]:
+        _set_msg("success", f"**{word}** was inactive - reactivated.")
+    else:
+        _set_msg("warning", f"**{word}** is already in your list.")
 
 
 def _do_lookup():
@@ -1749,6 +1754,32 @@ if st.session_state["current_page"] == "Add Word":
                 result["synonyms"], result["antonyms"], result["etymology"], result["examples"],
                 key_prefix=looked_up, tab_key="addword_subtab",
             )
+
+            # Only shown once the looked-up word is actually on the
+            # user's list (app_ideas #21) - re-checked fresh on every
+            # render (not cached alongside addword_result) so toggling
+            # it here immediately flips which of these two buttons
+            # shows, without a stale "Deactivate" surviving its own
+            # click. Re-adding an inactive word already reactivates it
+            # via db.add_word's own ON CONFLICT (see _save) - this is
+            # the direct route, for someone who just wants to flip the
+            # switch back without re-saving the definition.
+            existing = db.get_word(_uid(), looked_up)
+            if existing is not None:
+                if existing["active"]:
+                    if st.button(
+                        "🚫 Deactivate this word", key=f"addword_deactivate_{looked_up}",
+                        help="Stop being quizzed on this word - it stays in your history, just hidden from My Words and future quizzes",
+                    ):
+                        db.deactivate_word(_uid(), looked_up)
+                        st.rerun()
+                else:
+                    if st.button(
+                        "✅ Activate this word", key=f"addword_activate_{looked_up}",
+                        help="Add this word back to My Words and future quizzes",
+                    ):
+                        db.activate_word(_uid(), looked_up)
+                        st.rerun()
 
 # ------------------------------------------------------------
 # My Words

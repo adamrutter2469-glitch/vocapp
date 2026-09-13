@@ -354,13 +354,20 @@ def add_word(user_id: str, word: str, definition: str, part_of_speech: str = "",
     user's row.
 
     user_words (this user's own list membership + schedule) is ON
-    CONFLICT DO NOTHING, not DO UPDATE - re-adding a word you already
-    have is a content correction (handled above), not a reason to reset
-    YOUR review schedule or date_added. Was previously "ON CONFLICT DO
-    UPDATE SET (everything except the schedule columns)" on one shared
-    table; splitting the two concerns into two tables/statements makes
-    that same rule simpler to see at a glance instead of requiring an
-    exclusion list."""
+    CONFLICT DO NOTHING for everything except `active`, not a full DO
+    UPDATE - re-adding a word you already have is a content correction
+    (handled above), not a reason to reset YOUR review schedule or
+    date_added. Was previously "ON CONFLICT DO UPDATE SET (everything
+    except the schedule columns)" on one shared table; splitting the
+    two concerns into two tables/statements makes that same rule
+    simpler to see at a glance instead of requiring an exclusion list.
+
+    `active` IS force-set back to TRUE on conflict (app_ideas #18/#21)
+    - re-adding a word you'd deactivated is read as "I want this back,"
+    same as explicitly hitting Activate, so it shouldn't require a
+    separate step. This is a no-op (TRUE -> TRUE) for a word that was
+    already active, so it never surprises anyone re-adding an active
+    word purely for a definition refresh."""
     con = get_connection()
     w = word.strip()
     con.execute(
@@ -387,7 +394,7 @@ def add_word(user_id: str, word: str, definition: str, part_of_speech: str = "",
         """
         INSERT INTO user_words (user_id, word, date_added, repetition, ease_factor, interval_days, next_review_date)
         VALUES (?, ?, ?, 0, 2.5, 0, ?)
-        ON CONFLICT (user_id, word) DO NOTHING
+        ON CONFLICT (user_id, word) DO UPDATE SET active = TRUE
         """,
         [user_id, w, datetime.now(timezone.utc), _today_local()],
     )
@@ -427,11 +434,23 @@ def deactivate_word(user_id: str, word: str):
     still be found (e.g. via My Words' "show inactive" toggle). It just
     stops being served (next_due_word/soonest_upcoming) and stops
     counting toward Progress's Mastered/Learning/Needs Work snapshot,
-    both of which filter on uw.active. No reactivate_word counterpart
-    yet - per user request, reactivation isn't expected to see much use,
-    so there's no UI for it either right now."""
+    both of which filter on uw.active."""
     con = get_connection()
     con.execute("UPDATE user_words SET active = FALSE WHERE user_id = ? AND word = ?", [user_id, word])
+    con.close()
+    r2_storage.upload_db()
+
+
+def activate_word(user_id: str, word: str):
+    """The reverse of deactivate_word (app_ideas #21) - turns a word
+    back on for THIS user, so it's served again and counts toward
+    Progress's snapshot again. Exposed directly (Add Word's own
+    activate button) as well as reachable implicitly by just re-adding
+    an inactive word (see add_word's ON CONFLICT...DO UPDATE SET active
+    = TRUE) - this function is what that same logic would do by hand,
+    without also re-fetching/re-saving the word's dictionary content."""
+    con = get_connection()
+    con.execute("UPDATE user_words SET active = TRUE WHERE user_id = ? AND word = ?", [user_id, word])
     con.close()
     r2_storage.upload_db()
 
@@ -475,11 +494,15 @@ def get_word(user_id: str, word: str):
     """Dictionary content for `word`, but only if it's actually in THIS
     user's list (word_content existing globally - e.g. a friend already
     added it - doesn't count; this answers "is it in MY list", same as
-    the old single-user version answered "does it exist at all")."""
+    the old single-user version answered "does it exist at all").
+    Returns it regardless of active status (Add Word's own "already in
+    your list" check - see app.py's _save - needs to see an inactive
+    word too, not just active ones); `active` is included in the
+    returned dict so a caller can tell which."""
     con = get_connection()
     row = con.execute(
         """SELECT wc.word, wc.definition, wc.part_of_speech, wc.example, wc.synonyms, wc.phonetic,
-                  wc.audio_url, wc.antonyms, wc.etymology
+                  wc.audio_url, wc.antonyms, wc.etymology, uw.active
            FROM user_words uw JOIN word_content wc ON wc.word = uw.word
            WHERE uw.user_id = ? AND uw.word = ?""",
         [user_id, word],
@@ -490,7 +513,7 @@ def get_word(user_id: str, word: str):
     return {
         "word": row[0], "definition": row[1], "part_of_speech": row[2],
         "example": row[3], "synonyms": row[4], "phonetic": row[5], "audio_url": row[6],
-        "antonyms": row[7], "etymology": row[8],
+        "antonyms": row[7], "etymology": row[8], "active": row[9],
     }
 
 
