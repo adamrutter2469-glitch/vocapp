@@ -1088,9 +1088,176 @@ def _render_difficulty_badge(word: str) -> None:
     frequency.py's offline wordfreq lookup - cheap enough (no network
     call) to show everywhere a word appears, unlike trends.usage_trend's
     live (and unofficial/best-effort) network call, which stays scoped
-    to Add Word alone - see that call site's comment."""
+    to Add Word and Quiz Me's own detail tabs - see
+    _render_word_detail_tabs below."""
     label, color, _ = frequency.difficulty(word)
     st.caption(f":{color}[{label} vocabulary]")
+
+
+def _render_word_detail_tabs(
+    word: str, part_of_speech: str, definition: str, synonyms, antonyms, etymology: str,
+    seed_examples: list[str], key_prefix: str, tab_key: str,
+) -> None:
+    """Definition/Thesaurus/Examples/Advanced tabs - shared by Add
+    Word's own lookup result and Quiz Me's post-grading view
+    (app_ideas #9, "quiz me should mirror the detail in the add word
+    section") so the two can't drift apart into two near-duplicate
+    ~90-line blocks. synonyms/antonyms accept either a list (a fresh
+    dictionary.py lookup, like Add Word's own result) or a comma-
+    joined string (My Words' stored word_content row, like Quiz Me's
+    word_row) - joined into the same "word, word, word" text either
+    way before handing off to _render_clickable_text. seed_examples is
+    whatever examples are already in hand before this call (Add Word's
+    fresh lookup examples, or Quiz Me's single stored one) -
+    usage_examples.combined_examples tops that up to 3 total, best-
+    effort, regardless of which case it started from.
+
+    key_prefix must be unique per call site (word + a distinguishing
+    tag, e.g. "quizdef_conceit") - it's threaded into every OTHER
+    widget key below (each defword_ row, the trend_stat_* keys) so Add
+    Word's and Quiz Me's own copies of the same word's tabs never
+    collide, and so [class*="st-key-trend_stat_row_"] (a substring
+    match, not exact) still finds and styles either one. tab_key is
+    the tabs widget's own key, kept as a SEPARATE param rather than
+    also derived from key_prefix - Add Word's call needs this to stay
+    the exact literal "addword_subtab" (its own _run_lookup resets
+    that literal session_state key to jump back to Definition after a
+    new lookup); Quiz Me instead passes a per-word key
+    (f"quiz_subtab_{word}") and relies on a fresh key naturally
+    defaulting to the first tab on a new word, no manual reset needed."""
+    tab_definition, tab_thesaurus, tab_examples, tab_advanced = st.tabs(
+        ["Definition", "Thesaurus", "Examples", "Advanced"],
+        key=tab_key, on_change="rerun",
+    )
+
+    with tab_definition:
+        def_senses = _definition_senses(definition)
+        # Every real word here is its own click target (look up /
+        # add) - see _render_clickable_text. Always numbered, even
+        # for a single sense - a single *merged* sense (dictionary.py's
+        # _sense_groups: a base sense + its lettered sub-senses, like
+        # "step", collapses to one combined item) should still read
+        # the same as a single genuinely-one-sense word, not
+        # differently depending on which it was.
+        for i, s in enumerate(def_senses, 1):
+            row_key = f"defword_{key_prefix}_{i}" + ("_last" if i == len(def_senses) else "")
+            _render_clickable_text(s, key_prefix=row_key, prefix=f"{i}.")
+
+    with tab_thesaurus:
+        syn_text = synonyms if isinstance(synonyms, str) else ", ".join(synonyms or [])
+        ant_text = antonyms if isinstance(antonyms, str) else ", ".join(antonyms or [])
+        if syn_text:
+            st.caption("Synonyms")
+            _render_clickable_text(syn_text, key_prefix=f"defword_syn_{key_prefix}_last")
+        else:
+            st.caption("No synonyms found for this word.")
+        if ant_text:
+            st.caption("Antonyms")
+            _render_clickable_text(ant_text, key_prefix=f"defword_ant_{key_prefix}_last")
+        else:
+            st.caption("No antonyms found for this word.")
+
+    with tab_examples:
+        # Live network call (freedictionaryapi.com) - only fires while
+        # this tab is actually open (on_change="rerun" above makes
+        # st.tabs lazy: an inactive tab's own code doesn't run on a
+        # given rerun), same as Advanced's trend lookup below.
+        examples = usage_examples.combined_examples(word, part_of_speech, seed_examples)
+        if examples:
+            for ex in examples:
+                st.markdown(f"- *{ex}*")
+        else:
+            st.caption("No usage examples available for this word.")
+
+    with tab_advanced:
+        # Etymology leads the tab - it's the more stable, "read once"
+        # fact about a word. Usage-over-time (live network call,
+        # below) is the more exploratory piece, so it follows.
+        if etymology:
+            st.caption("Etymology")
+            st.markdown(etymology)
+        else:
+            st.caption("No etymology available for this word.")
+
+        # Live network call to an unofficial Google endpoint (see
+        # trends.py) - unlike the difficulty badge (offline, always
+        # shown), this is best-effort and only fires for the single
+        # word whose tabs are actually open right now, not something
+        # worth firing off for every word on a 20-per-page My Words
+        # listing.
+        trend = trends.usage_trend(word)
+        if trend:
+            summary = trends.trend_summary(trend)
+            arrow = {"rising": "↑", "falling": "↓", "flat": "→"}[summary["direction"]]
+            direction_label = {"rising": "Rising", "falling": "Falling", "flat": "Flat"}[summary["direction"]]
+            # +1: window_start_year and window_end_year are both
+            # inclusive endpoints (e.g. 2000 and 2019 span 20 years of
+            # data, not 19).
+            window_span = summary["window_end_year"] - summary["window_start_year"] + 1
+            # +.0f always includes the sign (+28%, -66%, +1%) - reads
+            # fine even for "flat", where a tiny +1%/-1% reinforces
+            # "barely moved" rather than needing its own separate
+            # wording.
+            change_phrase = f"{summary['pct_change']:+.0f}% since {summary['window_start_year']}"
+
+            with st.container(key=f"trend_stat_row_{key_prefix}"):
+                stat_peak_col, stat_low_col, trend_note_col = st.columns([1, 1, 3], gap="small")
+                with stat_peak_col:
+                    with st.container(key=f"trend_stat_peak_{key_prefix}"):
+                        st.markdown(
+                            f"<div class='stat-label'>Peak usage</div>"
+                            f"<div class='stat-value'>{summary['peak_year']}</div>",
+                            unsafe_allow_html=True,
+                        )
+                with stat_low_col:
+                    with st.container(key=f"trend_stat_low_{key_prefix}"):
+                        st.markdown(
+                            f"<div class='stat-label'>Lowest usage</div>"
+                            f"<div class='stat-value'>{summary['low_year']}</div>",
+                            unsafe_allow_html=True,
+                        )
+                with trend_note_col:
+                    with st.container(key=f"trend_note_{key_prefix}"):
+                        st.markdown(
+                            f"<span class='trend-arrow'>{arrow}</span>"
+                            f"<span class='trend-direction'>{direction_label}</span> "
+                            f"over the last {window_span} years; {change_phrase}."
+                            f"<span class='trend-detail'>"
+                            f"{summary['window_start_value']:.2f} → {summary['window_end_value']:.2f} "
+                            f"per million words ({summary['window_start_year']}–{summary['window_end_year']})"
+                            f"</span>",
+                            unsafe_allow_html=True,
+                        )
+
+            trend_df = pd.DataFrame(
+                {"Year": trend["years"], "Uses per million words": trend["per_million"]}
+            )
+            # st.line_chart's default number formatting adds thousands-
+            # separators to any large-enough numeric axis, which turns
+            # years into "1,800", "1,900", ... - an explicit Altair
+            # chart is what it takes to override that (format="d" - a
+            # plain integer, no grouping separator).
+            year_chart = (
+                alt.Chart(trend_df)
+                .mark_line(color=PAL['accent'])
+                .encode(
+                    x=alt.X("Year:Q", axis=alt.Axis(format="d"), title="Year"),
+                    y=alt.Y("Uses per million words:Q", title="Uses per million words"),
+                )
+                # Unlike the Progress combo chart (which draws its own
+                # axis-free text layers), this one uses Vega-Lite's
+                # real axes - configure_axis is what recolors THEIR
+                # labels/titles/gridlines, since they're drawn by
+                # Vega-Lite itself, not this file's own CSS or markup.
+                .properties(background=PAL['bg'])
+                .configure_axis(
+                    labelColor=PAL['text_65'], titleColor=PAL['text_65'], gridColor=PAL['border_08'],
+                    domainColor=PAL['border_15'], tickColor=PAL['border_15'],
+                )
+            )
+            st.altair_chart(year_chart, use_container_width=True)
+        else:
+            st.caption("No usage-over-time data available for this word.")
 
 
 if "quiz_word" not in st.session_state:
@@ -1488,34 +1655,18 @@ if st.session_state["current_page"] == "Quiz Me":
             # markup around the key phrases, rendered as bold green/red
             # inline (see _render_grading_feedback).
             _render_grading_feedback(r.feedback)
-            def_senses = _definition_senses(word_row["definition"])
-            # Always numbered, even for a single sense - see the matching
-            # comment in the Add Word section for why (a single *merged*
-            # sense should read the same as a single *genuinely one-
-            # sense* word, not differently depending on which it was).
-            # Every real word here is its own click target (look up /
-            # add), same as Add Word - "defword_" in the key prefix is
-            # what makes the existing .st-key-defword_* CSS (spacing,
-            # chevron-hiding, the plain-text-vs-button styling) apply
-            # here too, for free.
-            with st.container(key="quiz_def_heading"):
-                st.markdown("**Dictionary definition:**")
-            for i, s in enumerate(def_senses, 1):
-                row_key = f"defword_quizdef_{word_row['word']}_{i}" + ("_last" if i == len(def_senses) else "")
-                _render_clickable_text(s, key_prefix=row_key, prefix=f"{i}.")
-            if word_row["example"]:
-                with st.container(key="quiz_def_example"):
-                    st.markdown(f"*Example: {word_row['example']}*")
-            if word_row["synonyms"]:
-                _render_clickable_text(
-                    word_row["synonyms"], key_prefix=f"defword_quizsyn_{word_row['word']}_last",
-                    prefix="Synonyms:",
-                )
-            if word_row["antonyms"]:
-                _render_clickable_text(
-                    word_row["antonyms"], key_prefix=f"defword_quizant_{word_row['word']}_last",
-                    prefix="Antonyms:",
-                )
+            # Mirrors Add Word's own Definition/Thesaurus/Examples/
+            # Advanced tabs (app_ideas #9) instead of the flatter
+            # definition/example/synonyms/antonyms dump this used to
+            # be - see _render_word_detail_tabs. "quizdef" in the key
+            # prefix keeps every widget key here distinct from Add
+            # Word's own copy of the same word's tabs.
+            _render_word_detail_tabs(
+                word_row["word"], word_row["part_of_speech"], word_row["definition"],
+                word_row["synonyms"], word_row["antonyms"], word_row["etymology"],
+                [word_row["example"]] if word_row["example"] else [],
+                key_prefix=f"quizdef_{word_row['word']}", tab_key=f"quiz_subtab_{word_row['word']}",
+            )
 
             sched = st.session_state.quiz_schedule
             if sched:
@@ -1567,192 +1718,16 @@ if st.session_state["current_page"] == "Add Word":
             looked_up = st.session_state["addword_looked_up_word"]
             _render_difficulty_badge(looked_up)
 
-            # Everything past the word header splits into sub-tabs
-            # instead of one long scroll - Definition (senses + usage
-            # examples), Thesaurus (synonyms/antonyms), Advanced (usage
-            # trend + etymology). st.tabs() nested inside a plain
-            # container like this one is fine - the problem elsewhere in
-            # this file was specifically squeezing st.tabs() inside an
-            # st.columns() column, which drags every tab PANEL's width
-            # down with it; a plain container doesn't have that issue.
-            #
-            # key + on_change="rerun" is what makes the active tab
-            # readable/settable via st.session_state["addword_subtab"]
-            # at all (Streamlit tabs are pure client-side UI state by
-            # default) - _run_lookup uses that to jump back to
-            # Definition after every lookup, however it was triggered.
-            # As a side effect, on_change="rerun" also switches tabs
-            # from "every tab's content computes on every rerun
-            # regardless of which is open" to lazy (only the active
-            # tab's code runs) - a genuine bonus here, since it means
-            # Advanced's trend/etymology network call only fires while
-            # Advanced is actually the open tab, not on every rerun.
-            tab_definition, tab_thesaurus, tab_examples, tab_advanced = st.tabs(
-                ["Definition", "Thesaurus", "Examples", "Advanced"],
-                key="addword_subtab", on_change="rerun",
+            # Definition/Thesaurus/Examples/Advanced tabs - see
+            # _render_word_detail_tabs. tab_key stays the exact literal
+            # "addword_subtab" - _run_lookup resets that same
+            # session_state key to jump back to Definition after every
+            # new lookup, however it was triggered.
+            _render_word_detail_tabs(
+                looked_up, result["part_of_speech"], result["definition"],
+                result["synonyms"], result["antonyms"], result["etymology"], result["examples"],
+                key_prefix=looked_up, tab_key="addword_subtab",
             )
-
-            with tab_definition:
-                def_senses = _definition_senses(result["definition"])
-                # Every real word in the definition is its own click
-                # target (look up / add) - see _render_clickable_text.
-                # key_prefix includes the looked-up word so re-looking-
-                # up a different word doesn't collide with this word's
-                # still-mounted keys.
-                for i, s in enumerate(def_senses, 1):
-                    # Always numbered, even when there's only one sense -
-                    # a single merged sense (see dictionary.py's
-                    # _sense_groups: a base sense + its lettered sub-
-                    # senses, like "step", collapses to one combined
-                    # item) still reads as an enumerated/joined list, so
-                    # it gets a "1." the same as any other sense would.
-                    sense_prefix = f"{i}."
-                    # Last sense gets a distinguishing "_last" key suffix
-                    # so CSS can give it its own margin-bottom (see
-                    # .st-key-defword_..._last below) - keeps the gap
-                    # down to Usage unchanged while the gaps BETWEEN
-                    # senses shrink independently.
-                    row_key = f"defword_{looked_up}_{i}" + ("_last" if i == len(def_senses) else "")
-                    _render_clickable_text(s, key_prefix=row_key, prefix=sense_prefix)
-
-            with tab_thesaurus:
-                # Comma-separated and clickable, same word-popover
-                # treatment as the definition text above (reusing
-                # _render_clickable_text directly - it already renders
-                # whatever punctuation sits between words as plain
-                # text, so joining with ", " and letting it split on
-                # spaces gives "word," "word," "word" for free, with
-                # each trailing comma just along for the ride in the
-                # button's own label). "defword_" in the key prefix
-                # is deliberate, not just a name - it's what makes the
-                # existing .st-key-defword_* CSS (chevron-hiding,
-                # spacing, the no-min-width fix) apply here too, instead
-                # of needing a parallel set of rules for what's visually
-                # the same kind of row.
-                if result["synonyms"]:
-                    st.caption("Synonyms")
-                    _render_clickable_text(
-                        ", ".join(result["synonyms"]), key_prefix=f"defword_syn_{looked_up}_last",
-                    )
-                else:
-                    st.caption("No synonyms found for this word.")
-                if result["antonyms"]:
-                    st.caption("Antonyms")
-                    _render_clickable_text(
-                        ", ".join(result["antonyms"]), key_prefix=f"defword_ant_{looked_up}_last",
-                    )
-                else:
-                    st.caption("No antonyms found for this word.")
-
-            with tab_examples:
-                # Live network call (freedictionaryapi.com), same lazy-tab
-                # pattern as Advanced's trend lookup below - only fires
-                # while this tab is actually open. MW's own examples
-                # (result["examples"], up to 2) are already in hand from
-                # the lookup that already ran; this just tops them up to
-                # 3 total, best-effort.
-                examples = usage_examples.combined_examples(
-                    looked_up, result["part_of_speech"], result["examples"],
-                )
-                if examples:
-                    for ex in examples:
-                        st.markdown(f"- *{ex}*")
-                else:
-                    st.caption("No usage examples available for this word.")
-
-            with tab_advanced:
-                # Etymology leads the tab - it's the more stable, "read
-                # once" fact about a word. Usage-over-time (live network
-                # call, see below) is the more exploratory piece, so it
-                # follows.
-                if result["etymology"]:
-                    st.caption("Etymology")
-                    st.markdown(result["etymology"])
-                else:
-                    st.caption("No etymology available for this word.")
-
-                # Live network call to an unofficial Google endpoint (see
-                # trends.py) - unlike the difficulty badge above
-                # (offline, always shown), this is best-effort and
-                # scoped to Add Word only: it's one lookup for the
-                # single word being looked up here, not something worth
-                # firing off for every word on a 20-per-page My Words
-                # listing.
-                trend = trends.usage_trend(looked_up)
-                if trend:
-                    summary = trends.trend_summary(trend)
-                    arrow = {"rising": "↑", "falling": "↓", "flat": "→"}[summary["direction"]]
-                    direction_label = {"rising": "Rising", "falling": "Falling", "flat": "Flat"}[summary["direction"]]
-                    # +1: window_start_year and window_end_year are both
-                    # inclusive endpoints (e.g. 2000 and 2019 span 20
-                    # years of data, not 19).
-                    window_span = summary["window_end_year"] - summary["window_start_year"] + 1
-                    # +.0f always includes the sign (+28%, -66%, +1%) -
-                    # reads fine even for "flat", where a tiny +1%/-1%
-                    # reinforces "barely moved" rather than needing its
-                    # own separate wording.
-                    change_phrase = f"{summary['pct_change']:+.0f}% since {summary['window_start_year']}"
-
-                    with st.container(key=f"trend_stat_row_{looked_up}"):
-                        stat_peak_col, stat_low_col, trend_note_col = st.columns([1, 1, 3], gap="small")
-                        with stat_peak_col:
-                            with st.container(key=f"trend_stat_peak_{looked_up}"):
-                                st.markdown(
-                                    f"<div class='stat-label'>Peak usage</div>"
-                                    f"<div class='stat-value'>{summary['peak_year']}</div>",
-                                    unsafe_allow_html=True,
-                                )
-                        with stat_low_col:
-                            with st.container(key=f"trend_stat_low_{looked_up}"):
-                                st.markdown(
-                                    f"<div class='stat-label'>Lowest usage</div>"
-                                    f"<div class='stat-value'>{summary['low_year']}</div>",
-                                    unsafe_allow_html=True,
-                                )
-                        with trend_note_col:
-                            with st.container(key=f"trend_note_{looked_up}"):
-                                st.markdown(
-                                    f"<span class='trend-arrow'>{arrow}</span>"
-                                    f"<span class='trend-direction'>{direction_label}</span> "
-                                    f"over the last {window_span} years; {change_phrase}."
-                                    f"<span class='trend-detail'>"
-                                    f"{summary['window_start_value']:.2f} → {summary['window_end_value']:.2f} "
-                                    f"per million words ({summary['window_start_year']}–{summary['window_end_year']})"
-                                    f"</span>",
-                                    unsafe_allow_html=True,
-                                )
-
-                    trend_df = pd.DataFrame(
-                        {"Year": trend["years"], "Uses per million words": trend["per_million"]}
-                    )
-                    # st.line_chart's default number formatting adds
-                    # thousands-separators to any large-enough numeric
-                    # axis, which turns years into "1,800", "1,900", ...
-                    # - an explicit Altair chart is what it takes to
-                    # override that (format="d" - a plain integer, no
-                    # grouping separator).
-                    year_chart = (
-                        alt.Chart(trend_df)
-                        .mark_line(color=PAL['accent'])
-                        .encode(
-                            x=alt.X("Year:Q", axis=alt.Axis(format="d"), title="Year"),
-                            y=alt.Y("Uses per million words:Q", title="Uses per million words"),
-                        )
-                        # Unlike the Progress combo chart above (which
-                        # draws its own axis-free text layers), this one
-                        # uses Vega-Lite's real axes - configure_axis is
-                        # what recolors THEIR labels/titles/gridlines,
-                        # since they're drawn by Vega-Lite itself, not
-                        # this file's own CSS or markup.
-                        .properties(background=PAL['bg'])
-                        .configure_axis(
-                            labelColor=PAL['text_65'], titleColor=PAL['text_65'], gridColor=PAL['border_08'],
-                            domainColor=PAL['border_15'], tickColor=PAL['border_15'],
-                        )
-                    )
-                    st.altair_chart(year_chart, use_container_width=True)
-                else:
-                    st.caption("No usage-over-time data available for this word.")
 
 # ------------------------------------------------------------
 # My Words
