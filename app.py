@@ -84,6 +84,29 @@ PAL = {
     "on_accent": "#FFFFFF",
 }
 
+
+def _left_handed_enabled() -> bool:
+    """Whether the floating Menu button/drawer should sit on the left
+    instead of their default right - same early-read timing as
+    _dark_mode_enabled above, same reason (the CSS positioning them is
+    built before auth.require_login() runs)."""
+    if not st.user.is_logged_in:
+        return False
+    return db.get_user_settings(st.user.email)["handedness"] == "Left"
+
+
+_LEFT_HANDED = _left_handed_enabled()
+# The floating Menu button and the drawer it opens always sit on the
+# SAME side as each other (Settings' Handedness toggle moves both
+# together) - NAV_SIDE/NAV_SHADOW_OFFSET are what the CSS below
+# actually reads to place them; every rule that needs to flip reads
+# from these two instead of repeating the ternary.
+NAV_SIDE = "left" if _LEFT_HANDED else "right"
+# Box-shadow's x-offset points the shadow AWAY from the drawer, into
+# the page - positive for a left-anchored drawer (shadow falls right),
+# negative for a right-anchored one (shadow falls left).
+NAV_SHADOW_OFFSET = "2px" if _LEFT_HANDED else "-2px"
+
 # Custom CSS, scoped to specific elements via Streamlit's key -> CSS-class
 # feature (any element/container given key="foo" gets a "st-key-foo" class
 # on its wrapper - see https://docs.streamlit.io, "Style using CSS"). This
@@ -484,11 +507,11 @@ st.markdown(
     /* Floating Menu button - replaces the old full-width top bar
        entirely (user request: "remove the top welcome bar entirely...
        selecting the menu at the top of the screen on mobile is less
-       comfortable than selecting it on the bottom"). Fixed bottom-
-       right for now; a Settings toggle to mirror it bottom-left (and
-       open the drawer from the left) is a planned follow-up, not
-       built yet. bottom:88px, not a smaller offset flush with the
-       corner - clears My Words' own sticky pagination footer
+       comfortable than selecting it on the bottom"). Side follows
+       Settings' Handedness toggle (NAV_SIDE, computed in Python -
+       'right' by default) together with the drawer it opens.
+       bottom:88px, not a smaller offset flush with the corner - clears
+       My Words' own sticky pagination footer
        (.st-key-words_sticky_footer, ~64px tall including its border),
        which would otherwise sit right underneath/overlap it on that
        one page; simplest to size this once for the tallest case and
@@ -498,7 +521,7 @@ st.markdown(
     .st-key-menu_fab {{
         position: fixed;
         bottom: 88px;
-        right: 20px;
+        {NAV_SIDE}: 20px;
         z-index: 1500;
         /* Without this, the container stays Streamlit's default
            width:100% - right:20px then pins that full-width BOX's own
@@ -534,20 +557,19 @@ st.markdown(
         border-radius: 0;
     }}
 
-    /* Right-side nav drawer (Quiz Me / Add Word / My Words / Progress) -
-       only actually rendered (see app.py) while
+    /* Nav drawer (Quiz Me / Add Word / My Words / Progress) - only
+       actually rendered (see app.py) while
        st.session_state["nav_open"] is True, so this CSS only has to
        style it, not hide/show it. position:fixed makes it overlay the
        page rather than push content over, which sidesteps needing
        real flex/grid page-level layout just to make room for a
-       collapsible column. Opens from the right (was the left) to sit
-       under the floating Menu button, which is bottom-right - a
-       user-settings toggle to flip both to the left together is a
-       planned follow-up, not built yet. */
+       collapsible column. Side (NAV_SIDE, Python-computed) always
+       matches the floating Menu button's own side - Settings'
+       Handedness toggle moves both together. */
     .st-key-nav_sidebar {{
         position: fixed;
         top: 0;
-        right: 0;
+        {NAV_SIDE}: 0;
         height: 100vh;
         /* 40% narrower than the original 240px. No horizontal padding
            here at all (unlike the original, which had 1rem both
@@ -558,7 +580,7 @@ st.markdown(
            row instead. */
         width: min(144px, 80vw);
         background: {PAL['surface']};
-        box-shadow: -2px 0 16px {PAL['border_18']};
+        box-shadow: {NAV_SHADOW_OFFSET} 0 16px {PAL['border_18']};
         z-index: 3000;
         /* Top padding well past 60px - Streamlit's own native toolbar
            (Deploy/Stop/⋮) is a fixed-position element covering roughly
@@ -2258,6 +2280,7 @@ if st.session_state["current_page"] == "Settings":
     )
     st.session_state.setdefault("settings_daily_target", _settings["daily_word_target"])
     st.session_state.setdefault("settings_dark_mode", "Yes" if _settings["dark_mode"] else "No")
+    st.session_state.setdefault("settings_handedness", _settings["handedness"])
 
     st.text_input(
         "Alias", key="settings_alias", max_chars=10,
@@ -2273,6 +2296,8 @@ if st.session_state["current_page"] == "Settings":
     st.caption("How many words a day counts toward your Progress tab streak.")
     st.selectbox("Dark Mode", ["No", "Yes"], key="settings_dark_mode")
     st.caption("Switch the whole app to a dark color scheme.")
+    st.selectbox("Handedness", ["Right", "Left"], key="settings_handedness")
+    st.caption("Which side the floating Menu button and drawer sit on.")
 
     if st.button("Save Settings", type="primary"):
         db.save_user_settings(
@@ -2282,14 +2307,16 @@ if st.session_state["current_page"] == "Settings":
             st.session_state["settings_share_progress"] == "Yes",
             st.session_state["settings_daily_target"],
             st.session_state["settings_dark_mode"] == "Yes",
+            st.session_state["settings_handedness"],
         )
         st.toast("Settings saved.", icon="✅")
-        # Dark Mode's own effect is the CSS built at the very top of this
-        # script run (PAL, read before Settings even renders) - a plain
-        # rerun is what picks up the new value, same as every other
-        # setting here, but this is the one where "you won't see it
-        # until the next rerun" would otherwise be confusing (no visual
-        # change on this same run despite the toast saying "saved").
+        # Dark Mode/Handedness's own effect is the CSS built at the very
+        # top of this script run (PAL/NAV_SIDE, read before Settings
+        # even renders) - a plain rerun is what picks up the new value,
+        # same as every other setting here, but these are the ones
+        # where "you won't see it until the next rerun" would otherwise
+        # be confusing (no visual change on this same run despite the
+        # toast saying "saved").
         st.rerun()
 
 # ------------------------------------------------------------
@@ -2336,8 +2363,9 @@ and quiz volume over time.
 """,
         "Settings": """
 Personalize your account: a short display alias, your daily word
-target for the Progress streak, Dark Mode, and preferences for
-community word sharing and progress visibility.
+target for the Progress streak, Dark Mode, which side the floating
+Menu button sits on, and preferences for community word sharing and
+progress visibility.
 """,
         "App Ideas": """
 Have a suggestion? Type it here. Every idea is saved and reviewed to
