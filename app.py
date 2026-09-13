@@ -942,6 +942,38 @@ st.markdown(
     [data-testid="stExpander"] summary:focus-visible {{
         background-color: {PAL['accent_tint']} !important;
     }}
+    /* Settings form: centered and narrower than the full page width,
+       with a real gutter on BOTH sides - not just whichever side the
+       floating Menu button (Settings' own Handedness toggle) happens
+       to sit on, so the form looks identical either way. 200px total
+       (100px/side) comfortably clears the button's own footprint
+       (56px wide + 20px offset from the edge = 76px) with margin to
+       spare, on any viewport down to a narrow phone; 480px caps it at
+       a normal reading width on desktop rather than stretching
+       edge-to-edge on a wide window. */
+    .st-key-settings_form {{
+        width: min(480px, calc(100% - 200px));
+        margin: 0 auto;
+    }}
+    /* Save Settings: centered under the form instead of left-aligned
+       (Streamlit's own button default) - on a left-handed layout that
+       default position is exactly where the Menu button sits.
+       Centering targets this wrapper, not [data-testid="stButton"]
+       directly - confirmed live that stButton itself is already
+       shrink-wrapped to the button's own content (own width just
+       ~104px, not the form's 480px), so centering an already-content-
+       sized box within itself did nothing; this container defaults to
+       the full form width like any other. align-items, not
+       justify-content - a Streamlit container is a COLUMN flexbox by
+       default, so justify-content controls vertical placement (no
+       visible effect on a single-child row) while align-items is what
+       actually centers along the horizontal cross-axis (confirmed
+       live: justify-content:center alone left the button exactly
+       where it started). */
+    .st-key-settings_save_row {{
+        display: flex;
+        align-items: center;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -2282,42 +2314,54 @@ if st.session_state["current_page"] == "Settings":
     st.session_state.setdefault("settings_dark_mode", "Yes" if _settings["dark_mode"] else "No")
     st.session_state.setdefault("settings_handedness", _settings["handedness"])
 
-    st.text_input(
-        "Alias", key="settings_alias", max_chars=10,
-        help="A short display name, 10 characters max.",
-    )
-    st.selectbox("Auto-Add Community Words", ["No", "Yes"], key="settings_auto_add")
-    st.caption("Automatically add new words other users add to your own list.")
-    st.selectbox("Share My Progress", ["No", "Yes"], key="settings_share_progress")
-    st.caption("Let other users see your accuracy and streak.")
-    st.number_input(
-        "Daily Word Target", key="settings_daily_target", min_value=1, max_value=100, step=1,
-    )
-    st.caption("How many words a day counts toward your Progress tab streak.")
-    st.selectbox("Dark Mode", ["No", "Yes"], key="settings_dark_mode")
-    st.caption("Switch the whole app to a dark color scheme.")
-    st.selectbox("Handedness", ["Right", "Left"], key="settings_handedness")
-    st.caption("Which side the floating Menu button and drawer sit on.")
-
-    if st.button("Save Settings", type="primary"):
-        db.save_user_settings(
-            _uid(),
-            st.session_state["settings_alias"],
-            st.session_state["settings_auto_add"] == "Yes",
-            st.session_state["settings_share_progress"] == "Yes",
-            st.session_state["settings_daily_target"],
-            st.session_state["settings_dark_mode"] == "Yes",
-            st.session_state["settings_handedness"],
+    # Centered and narrower than a full-width form (see
+    # .st-key-settings_form CSS) - per user request: on a left-handed
+    # layout, the floating Menu button sits bottom-left, exactly where
+    # an edge-to-edge form's own left edge (and the Save button, left-
+    # aligned by default) used to land, and could obstruct/overlap it
+    # while scrolling. A real gutter on BOTH sides, wide enough to
+    # clear the FAB on either side, means Settings looks the same
+    # regardless of which Handedness is picked.
+    with st.container(key="settings_form"):
+        st.text_input(
+            "Alias", key="settings_alias", max_chars=10,
+            help="A short display name, 10 characters max.",
         )
-        st.toast("Settings saved.", icon="✅")
-        # Dark Mode/Handedness's own effect is the CSS built at the very
-        # top of this script run (PAL/NAV_SIDE, read before Settings
-        # even renders) - a plain rerun is what picks up the new value,
-        # same as every other setting here, but these are the ones
-        # where "you won't see it until the next rerun" would otherwise
-        # be confusing (no visual change on this same run despite the
-        # toast saying "saved").
-        st.rerun()
+        st.selectbox("Auto-Add Community Words", ["No", "Yes"], key="settings_auto_add")
+        st.caption("Automatically add new words other users add to your own list.")
+        st.selectbox("Share My Progress", ["No", "Yes"], key="settings_share_progress")
+        st.caption("Let other users see your accuracy and streak.")
+        st.number_input(
+            "Daily Word Target", key="settings_daily_target", min_value=1, max_value=100, step=1,
+        )
+        st.caption("How many words a day counts toward your Progress tab streak.")
+        st.selectbox("Dark Mode", ["No", "Yes"], key="settings_dark_mode")
+        st.caption("Switch the whole app to a dark color scheme.")
+        st.selectbox("Handedness", ["Right", "Left"], key="settings_handedness")
+        st.caption("Which side the floating Menu button and drawer sit on.")
+
+        with st.container(key="settings_save_row"):
+            _save_clicked = st.button("Save Settings", type="primary")
+        if _save_clicked:
+            db.save_user_settings(
+                _uid(),
+                st.session_state["settings_alias"],
+                st.session_state["settings_auto_add"] == "Yes",
+                st.session_state["settings_share_progress"] == "Yes",
+                st.session_state["settings_daily_target"],
+                st.session_state["settings_dark_mode"] == "Yes",
+                st.session_state["settings_handedness"],
+            )
+            st.toast("Settings saved.", icon="✅")
+            # Dark Mode/Handedness's own effect is the CSS built at the
+            # very top of this script run (PAL/NAV_SIDE, read before
+            # Settings even renders) - a plain rerun is what picks up
+            # the new value, same as every other setting here, but
+            # these are the ones where "you won't see it until the
+            # next rerun" would otherwise be confusing (no visual
+            # change on this same run despite the toast saying
+            # "saved").
+            st.rerun()
 
 # ------------------------------------------------------------
 # About
