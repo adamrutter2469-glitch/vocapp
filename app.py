@@ -1569,11 +1569,28 @@ if st.session_state["current_page"] == "Quiz Me":
         if st.session_state.quiz_result is not None:
             # Next word lives up here (top-right, beside the word) once an
             # answer's been graded - no need to scroll past the feedback
-            # to move on.
-            c_word, c_next = st.columns([3, 1])
+            # to move on. Deactivate sits immediately to its left as a
+            # bare icon button (app_ideas #18/#21 - moved here from its
+            # own row below the tabs per user request: Add Word no
+            # longer carries a deactivate control at all, so this is now
+            # the only place to turn a word off, and it reads more like
+            # a quick status toggle beside Next word than a standalone
+            # action worth a full labeled button).
+            c_word, c_deactivate, c_next = st.columns([3, 0.6, 1.4])
             with c_word:
                 with st.container(key="word_header_row_quiz_active"):
                     speaker.word_header(word_row["word"], word_row.get("audio_url", ""), text_color=PAL['text'])
+            with c_deactivate:
+                if st.button(
+                    "🚫", key=f"deactivate_btn_{word_row['word']}",
+                    help="Deactivate this word - stop being quizzed on it, stays in your history",
+                ):
+                    db.deactivate_word(_uid(), word_row["word"])
+                    st.session_state.quiz_word = None
+                    st.session_state.quiz_result = None
+                    st.session_state.quiz_schedule = None
+                    st.session_state["quiz_form_version"] += 1
+                    st.rerun()
             with c_next:
                 if st.button("Next word →", key="next_word_btn_top"):
                     st.session_state.quiz_word = None
@@ -1680,27 +1697,6 @@ if st.session_state["current_page"] == "Quiz Me":
                     f"(in {sched['interval_days']} day(s))"
                 )
 
-            # app_ideas #18 - lets someone stop being quizzed on a word
-            # (already learned it elsewhere, decided it's not worth
-            # relearning, etc.) without deleting it outright: the word
-            # and its whole attempt history stay put, it just drops out
-            # of next_due_word/soonest_upcoming and the Progress
-            # snapshot. No confirmation dialog - the word's still fully
-            # recoverable via My Words' "show inactive" toggle, there's
-            # just no reactivate button there yet (not expected to see
-            # much use per user request), so undoing this today means
-            # asking to re-add it.
-            if st.button(
-                "🚫 Deactivate this word", key=f"deactivate_btn_{word_row['word']}",
-                help="Stop being quizzed on this word - it stays in your history, just hidden from My Words and future quizzes",
-            ):
-                db.deactivate_word(_uid(), word_row["word"])
-                st.session_state.quiz_word = None
-                st.session_state.quiz_result = None
-                st.session_state.quiz_schedule = None
-                st.session_state["quiz_form_version"] += 1
-                st.rerun()
-
 # ------------------------------------------------------------
 # Add Word
 # ------------------------------------------------------------
@@ -1754,32 +1750,13 @@ if st.session_state["current_page"] == "Add Word":
                 result["synonyms"], result["antonyms"], result["etymology"], result["examples"],
                 key_prefix=looked_up, tab_key="addword_subtab",
             )
-
-            # Only shown once the looked-up word is actually on the
-            # user's list (app_ideas #21) - re-checked fresh on every
-            # render (not cached alongside addword_result) so toggling
-            # it here immediately flips which of these two buttons
-            # shows, without a stale "Deactivate" surviving its own
-            # click. Re-adding an inactive word already reactivates it
-            # via db.add_word's own ON CONFLICT (see _save) - this is
-            # the direct route, for someone who just wants to flip the
-            # switch back without re-saving the definition.
-            existing = db.get_word(_uid(), looked_up)
-            if existing is not None:
-                if existing["active"]:
-                    if st.button(
-                        "🚫 Deactivate this word", key=f"addword_deactivate_{looked_up}",
-                        help="Stop being quizzed on this word - it stays in your history, just hidden from My Words and future quizzes",
-                    ):
-                        db.deactivate_word(_uid(), looked_up)
-                        st.rerun()
-                else:
-                    if st.button(
-                        "✅ Activate this word", key=f"addword_activate_{looked_up}",
-                        help="Add this word back to My Words and future quizzes",
-                    ):
-                        db.activate_word(_uid(), looked_up)
-                        st.rerun()
+            # No Activate/Deactivate control here (app_ideas #18/#21) -
+            # searching a word in Add Word is never read as "I want to
+            # turn this off," so Deactivate lives only in Quiz Me now.
+            # Activate doesn't need its own button either: db.add_word's
+            # ON CONFLICT already flips an inactive word back to active
+            # the moment "Add Word" is pressed on it (see _save) - the
+            # exact behavior wanted here, with no separate control.
 
 # ------------------------------------------------------------
 # My Words

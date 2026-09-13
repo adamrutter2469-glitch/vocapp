@@ -434,23 +434,18 @@ def deactivate_word(user_id: str, word: str):
     still be found (e.g. via My Words' "show inactive" toggle). It just
     stops being served (next_due_word/soonest_upcoming) and stops
     counting toward Progress's Mastered/Learning/Needs Work snapshot,
-    both of which filter on uw.active."""
+    both of which filter on uw.active.
+
+    No standalone reactivate/activate_word counterpart (app_ideas #21) -
+    re-adding a deactivated word via Add Word's own "Add Word" button
+    already flips active back to TRUE by itself (see add_word's ON
+    CONFLICT), and that's deliberately the ONLY way back in: searching
+    a word in Add Word is never read as "deactivate this," per user
+    request, so this function has no UI counterpart there either -
+    Quiz Me's deactivate icon is the only place a word gets turned off
+    at all."""
     con = get_connection()
     con.execute("UPDATE user_words SET active = FALSE WHERE user_id = ? AND word = ?", [user_id, word])
-    con.close()
-    r2_storage.upload_db()
-
-
-def activate_word(user_id: str, word: str):
-    """The reverse of deactivate_word (app_ideas #21) - turns a word
-    back on for THIS user, so it's served again and counts toward
-    Progress's snapshot again. Exposed directly (Add Word's own
-    activate button) as well as reachable implicitly by just re-adding
-    an inactive word (see add_word's ON CONFLICT...DO UPDATE SET active
-    = TRUE) - this function is what that same logic would do by hand,
-    without also re-fetching/re-saving the word's dictionary content."""
-    con = get_connection()
-    con.execute("UPDATE user_words SET active = TRUE WHERE user_id = ? AND word = ?", [user_id, word])
     con.close()
     r2_storage.upload_db()
 
