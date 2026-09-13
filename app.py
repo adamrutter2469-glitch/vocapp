@@ -2323,22 +2323,53 @@ if st.session_state["current_page"] == "Settings":
     # clear the FAB on either side, means Settings looks the same
     # regardless of which Handedness is picked.
     with st.container(key="settings_form"):
+        # Every field reads Title -> description -> input, in that
+        # order (per user request - the description used to sit BELOW
+        # the input, as a caption). Streamlit always renders a widget's
+        # own label immediately above its own input as one atomic
+        # unit, with no way to insert content between them - so each
+        # title below is its own markdown line, with the widget's real
+        # label hidden (label_visibility="collapsed", not removed
+        # entirely - still there for screen readers) rather than
+        # relying on the widget to draw it.
         st.text_input(
             "Alias", key="settings_alias", max_chars=10,
             help="A short display name, 10 characters max.",
         )
-        st.selectbox("Auto-Add Community Words", ["No", "Yes"], key="settings_auto_add")
+        # Every plain Yes/No (or Right/Left) choice is a horizontal
+        # st.radio, not a selectbox - per user request, both options
+        # visible at once instead of a dropdown that takes a click to
+        # even see them.
+        st.markdown("**Auto-Add Community Words**")
         st.caption("Automatically add new words other users add to your own list.")
-        st.selectbox("Share My Progress", ["No", "Yes"], key="settings_share_progress")
+        st.radio(
+            "Auto-Add Community Words", ["No", "Yes"], key="settings_auto_add",
+            horizontal=True, label_visibility="collapsed",
+        )
+        st.markdown("**Share My Progress**")
         st.caption("Let other users see your accuracy and streak.")
+        st.radio(
+            "Share My Progress", ["No", "Yes"], key="settings_share_progress",
+            horizontal=True, label_visibility="collapsed",
+        )
+        st.markdown("**Daily Word Target**")
+        st.caption("How many words a day counts toward your Progress tab streak.")
         st.number_input(
             "Daily Word Target", key="settings_daily_target", min_value=1, max_value=100, step=1,
+            label_visibility="collapsed",
         )
-        st.caption("How many words a day counts toward your Progress tab streak.")
-        st.selectbox("Dark Mode", ["No", "Yes"], key="settings_dark_mode")
+        st.markdown("**Dark Mode**")
         st.caption("Switch the whole app to a dark color scheme.")
-        st.selectbox("Handedness", ["Right", "Left"], key="settings_handedness")
+        st.radio(
+            "Dark Mode", ["No", "Yes"], key="settings_dark_mode",
+            horizontal=True, label_visibility="collapsed",
+        )
+        st.markdown("**Handedness**")
         st.caption("Which side the floating Menu button and drawer sit on.")
+        st.radio(
+            "Handedness", ["Right", "Left"], key="settings_handedness",
+            horizontal=True, label_visibility="collapsed",
+        )
 
         with st.container(key="settings_save_row"):
             _save_clicked = st.button("Save Settings", type="primary")
