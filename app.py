@@ -457,6 +457,20 @@ st.markdown(
         flex: 0 0 auto !important;
         min-width: 0 !important;
     }}
+    /* Quiz Me's Deactivate icon, between the word and Next word - only
+       ITS column shrink-wraps (word/Next word keep their normal
+       proportional widths, so the word stays left and Next word stays
+       pinned to the row's far right). Un-shrink-wrapped, this column's
+       own proportional width (0.6 of the row) left ~29px of dead space
+       after the icon on top of the 16px inter-column gap, ~45px total
+       between the icon and Next word - shrinking the column to the
+       icon's own width removes that 29px, leaving just the 16px gap
+       (a ~64% cut, measured live - user asked for "about 60%"). */
+    .st-key-quiz_next_row [data-testid="stColumn"]:has(.st-key-quiz_deactivate_col) {{
+        width: auto !important;
+        flex: 0 0 auto !important;
+        min-width: 0 !important;
+    }}
     /* Word header (word + speaker icon, rendered via speaker.word_header
        as an iframe component) down to the part-of-speech/pronunciation
        caption below it, in both Quiz Me and Add Word - measured at 35px
@@ -1576,28 +1590,30 @@ if st.session_state["current_page"] == "Quiz Me":
             # the only place to turn a word off, and it reads more like
             # a quick status toggle beside Next word than a standalone
             # action worth a full labeled button).
-            c_word, c_deactivate, c_next = st.columns([3, 0.6, 1.4])
-            with c_word:
-                with st.container(key="word_header_row_quiz_active"):
-                    speaker.word_header(word_row["word"], word_row.get("audio_url", ""), text_color=PAL['text'])
-            with c_deactivate:
-                if st.button(
-                    "🚫", key=f"deactivate_btn_{word_row['word']}",
-                    help="Deactivate this word - stop being quizzed on it, stays in your history",
-                ):
-                    db.deactivate_word(_uid(), word_row["word"])
-                    st.session_state.quiz_word = None
-                    st.session_state.quiz_result = None
-                    st.session_state.quiz_schedule = None
-                    st.session_state["quiz_form_version"] += 1
-                    st.rerun()
-            with c_next:
-                if st.button("Next word →", key="next_word_btn_top"):
-                    st.session_state.quiz_word = None
-                    st.session_state.quiz_result = None
-                    st.session_state.quiz_schedule = None
-                    st.session_state["quiz_form_version"] += 1
-                    st.rerun()
+            with st.container(key="quiz_next_row"):
+                c_word, c_deactivate, c_next = st.columns([3, 0.6, 1.4])
+                with c_word:
+                    with st.container(key="word_header_row_quiz_active"):
+                        speaker.word_header(word_row["word"], word_row.get("audio_url", ""), text_color=PAL['text'])
+                with c_deactivate:
+                    with st.container(key="quiz_deactivate_col"):
+                        if st.button(
+                            "🚫", key=f"deactivate_btn_{word_row['word']}",
+                            help="Deactivate this word - stop being quizzed on it, stays in your history",
+                        ):
+                            db.deactivate_word(_uid(), word_row["word"])
+                            st.session_state.quiz_word = None
+                            st.session_state.quiz_result = None
+                            st.session_state.quiz_schedule = None
+                            st.session_state["quiz_form_version"] += 1
+                            st.rerun()
+                with c_next:
+                    if st.button("Next word →", key="next_word_btn_top"):
+                        st.session_state.quiz_word = None
+                        st.session_state.quiz_result = None
+                        st.session_state.quiz_schedule = None
+                        st.session_state["quiz_form_version"] += 1
+                        st.rerun()
         else:
             with st.container(key="word_header_row_quiz_pending"):
                 speaker.word_header(word_row["word"], word_row.get("audio_url", ""), text_color=PAL['text'])
