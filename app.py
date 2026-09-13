@@ -1675,6 +1675,27 @@ if st.session_state["current_page"] == "Quiz Me":
                     f"(in {sched['interval_days']} day(s))"
                 )
 
+            # app_ideas #18 - lets someone stop being quizzed on a word
+            # (already learned it elsewhere, decided it's not worth
+            # relearning, etc.) without deleting it outright: the word
+            # and its whole attempt history stay put, it just drops out
+            # of next_due_word/soonest_upcoming and the Progress
+            # snapshot. No confirmation dialog - the word's still fully
+            # recoverable via My Words' "show inactive" toggle, there's
+            # just no reactivate button there yet (not expected to see
+            # much use per user request), so undoing this today means
+            # asking to re-add it.
+            if st.button(
+                "🚫 Deactivate this word", key=f"deactivate_btn_{word_row['word']}",
+                help="Stop being quizzed on this word - it stays in your history, just hidden from My Words and future quizzes",
+            ):
+                db.deactivate_word(_uid(), word_row["word"])
+                st.session_state.quiz_word = None
+                st.session_state.quiz_result = None
+                st.session_state.quiz_schedule = None
+                st.session_state["quiz_form_version"] += 1
+                st.rerun()
+
 # ------------------------------------------------------------
 # Add Word
 # ------------------------------------------------------------
@@ -1744,6 +1765,11 @@ st.session_state.setdefault("confirm_bulk_delete", False)
 st.session_state.setdefault("words_sort", SORT_OPTIONS[0])
 st.session_state.setdefault("words_filter", FILTER_OPTIONS[0])
 st.session_state.setdefault("words_search", "")
+# app_ideas #18 - active/inactive is its own axis, separate from
+# Mastered/Learning/Needs Work (FILTER_OPTIONS above): a word can be
+# inactive regardless of how well you know it. Off by default per user
+# request ("Inactive words should be hidden by default").
+st.session_state.setdefault("words_show_inactive", False)
 
 
 def _word_status(w):
@@ -1826,7 +1852,7 @@ def _do_single_delete(word):
 
 
 if st.session_state["current_page"] == "My Words":
-    all_words = db.get_all_words(_uid())
+    all_words = db.get_all_words(_uid(), include_inactive=st.session_state["words_show_inactive"])
     if not all_words:
         st.info("No words yet.")
     else:
@@ -1899,6 +1925,14 @@ if st.session_state["current_page"] == "My Words":
                         "Filter by", FILTER_OPTIONS, key="words_filter",
                         on_change=_reset_words_page, label_visibility="collapsed",
                     )
+                    # Separate axis from the radio above (app_ideas #18) -
+                    # a word's active/inactive state and its Mastered/
+                    # Learning/Needs Work bucket are independent, so this
+                    # is its own checkbox rather than another radio option.
+                    st.checkbox(
+                        "Show inactive words", key="words_show_inactive",
+                        on_change=_reset_words_page,
+                    )
             with c_sort:
                 with st.popover("⇅", help="Sort"):
                     st.radio(
@@ -1947,7 +1981,15 @@ if st.session_state["current_page"] == "My Words":
                     with row_check:
                         st.checkbox("Select", key=f"sel_{w['word']}", label_visibility="collapsed")
                     with row_expander:
-                        with st.expander(f"{w['word']}  —  {avg}"):
+                        # Inactive words only ever appear here at all when
+                        # "Show inactive words" is checked (get_all_words
+                        # excludes them otherwise) - the label just marks
+                        # which ones they are, since nothing else in the
+                        # collapsed row would otherwise say so.
+                        title = f"{w['word']}  —  {avg}"
+                        if not w["active"]:
+                            title += "  🚫 inactive"
+                        with st.expander(title):
                             speaker.play_button(w["word"], w.get("audio_url", ""))
                             def_senses = _definition_senses(w["definition"])
                             # Always numbered, even for a single sense - see

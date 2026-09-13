@@ -162,6 +162,13 @@ def _create_schema(con):
             etymology       TEXT
         )
     """)
+    # active (app_ideas #18) - per user, per word, deliberately NOT on
+    # word_content: deactivating a word for yourself has no effect on
+    # anyone else who also has it in their own list. Defaults TRUE so
+    # every word already on every user's list - present and future -
+    # starts (and stays, until someone actually deactivates it) active,
+    # per user request ("words on the list should default to active
+    # for all users").
     con.execute("""
         CREATE TABLE IF NOT EXISTS user_words (
             user_id           TEXT NOT NULL,
@@ -171,9 +178,18 @@ def _create_schema(con):
             ease_factor       DOUBLE DEFAULT 2.5,
             interval_days     INTEGER DEFAULT 0,
             next_review_date  DATE DEFAULT CURRENT_DATE,
+            active            BOOLEAN DEFAULT TRUE,
             PRIMARY KEY (user_id, word)
         )
     """)
+    # Added after this table already existed in deployed DBs - same
+    # ALTER TABLE ADD COLUMN pattern (and same "no NOT NULL - DuckDB
+    # doesn't support adding a constrained column" limitation) as
+    # app_ideas'/user_settings' own migrations. Confirmed live: ADD
+    # COLUMN ... DEFAULT TRUE backfills every EXISTING row to TRUE too,
+    # not just new ones going forward - exactly the "default to active"
+    # behavior asked for, with no separate backfill statement needed.
+    con.execute("ALTER TABLE user_words ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE")
     con.execute("CREATE SEQUENCE IF NOT EXISTS attempt_id_seq START 1")
     con.execute("""
         CREATE TABLE IF NOT EXISTS quiz_attempts (
@@ -404,26 +420,50 @@ def delete_word(user_id: str, word: str):
     r2_storage.upload_db()
 
 
-def get_all_words(user_id: str):
+def deactivate_word(user_id: str, word: str):
+    """Turns a word off for THIS user only (app_ideas #18) - unlike
+    delete_word, quiz_attempts history and the user_words row itself are
+    both left alone, so past stats/streaks stay intact and the word can
+    still be found (e.g. via My Words' "show inactive" toggle). It just
+    stops being served (next_due_word/soonest_upcoming) and stops
+    counting toward Progress's Mastered/Learning/Needs Work snapshot,
+    both of which filter on uw.active. No reactivate_word counterpart
+    yet - per user request, reactivation isn't expected to see much use,
+    so there's no UI for it either right now."""
+    con = get_connection()
+    con.execute("UPDATE user_words SET active = FALSE WHERE user_id = ? AND word = ?", [user_id, word])
+    con.close()
+    r2_storage.upload_db()
+
+
+def get_all_words(user_id: str, include_inactive: bool = False):
     """This user's words joined with attempt stats: times_quizzed,
     avg_accuracy, last_quizzed - scoped to their own quiz_attempts only,
-    even though the word itself may exist in other users' lists too."""
+    even though the word itself may exist in other users' lists too.
+
+    Active-only by default (app_ideas #18) - a deactivated word is
+    meant to disappear from the list you actually work with day to
+    day, per user request ("inactive words should be hidden by
+    default"); include_inactive=True is what My Words' own "show
+    inactive" toggle passes to reveal them anyway. active itself is
+    included in every returned dict either way, so a caller showing
+    both can still tell which is which."""
     con = get_connection()
-    rows = con.execute("""
+    rows = con.execute(f"""
         SELECT
             wc.word, wc.definition, wc.part_of_speech, wc.example, wc.synonyms, wc.phonetic,
             wc.audio_url, wc.antonyms, wc.etymology, uw.date_added, uw.next_review_date,
-            uw.interval_days, uw.repetition,
+            uw.interval_days, uw.repetition, uw.active,
             COUNT(a.id)                    AS times_quizzed,
             ROUND(AVG(a.accuracy), 1)      AS avg_accuracy,
             MAX(a.attempt_date)            AS last_quizzed
         FROM user_words uw
         JOIN word_content wc ON wc.word = uw.word
         LEFT JOIN quiz_attempts a ON a.word = uw.word AND a.user_id = uw.user_id
-        WHERE uw.user_id = ?
+        WHERE uw.user_id = ? {"" if include_inactive else "AND uw.active"}
         GROUP BY wc.word, wc.definition, wc.part_of_speech, wc.example, wc.synonyms, wc.phonetic,
                  wc.audio_url, wc.antonyms, wc.etymology, uw.date_added, uw.next_review_date,
-                 uw.interval_days, uw.repetition
+                 uw.interval_days, uw.repetition, uw.active
         ORDER BY uw.date_added DESC
     """, [user_id]).fetchall()
     cols = [d[0] for d in con.description]
@@ -484,7 +524,10 @@ def next_due_word(user_id: str):
     the only - or the random pick - thing left to show, landing it right
     back in front of you). If every due word has already been seen
     today, falls back to whichever was seen longest ago today, so a
-    second pass still spreads out rather than looping the same word."""
+    second pass still spreads out rather than looping the same word.
+
+    Deactivated words (app_ideas #18) are excluded via uw.active - a
+    word someone's turned off shouldn't keep coming up in their queue."""
     today = _today_local()
     day_start, day_end = _local_day_utc_bounds(today)
     con = get_connection()
@@ -496,7 +539,7 @@ def next_due_word(user_id: str):
             WHERE user_id = ? AND attempt_date >= ? AND attempt_date < ?
             GROUP BY word
         ) today ON today.word = uw.word
-        WHERE uw.user_id = ? AND uw.next_review_date <= ?
+        WHERE uw.user_id = ? AND uw.active AND uw.next_review_date <= ?
         ORDER BY (today.word IS NOT NULL) ASC, today.last_today ASC, RANDOM()
         LIMIT 1
     """, [user_id, day_start, day_end, user_id, today]).fetchone()
@@ -516,7 +559,10 @@ def soonest_upcoming(user_id: str):
     Same "already quizzed today sorts last" rule as next_due_word() -
     without it, practice mode on a small deck could hand back the word
     you just answered, since a just-missed word's 1-day reschedule can
-    easily be the earliest next_review_date in the whole deck."""
+    easily be the earliest next_review_date in the whole deck.
+
+    Deactivated words (app_ideas #18) are excluded via uw.active, same
+    as next_due_word - a deactivated word shouldn't surface here either."""
     today = _today_local()
     day_start, day_end = _local_day_utc_bounds(today)
     con = get_connection()
@@ -528,7 +574,7 @@ def soonest_upcoming(user_id: str):
             WHERE user_id = ? AND attempt_date >= ? AND attempt_date < ?
             GROUP BY word
         ) today ON today.word = uw.word
-        WHERE uw.user_id = ?
+        WHERE uw.user_id = ? AND uw.active
         ORDER BY (today.word IS NOT NULL) ASC, today.last_today ASC,
                  uw.next_review_date ASC
         LIMIT 1
@@ -607,7 +653,14 @@ def get_progress_stats(user_id: str):
                   several reviews) AND avg accuracy >= 80
       Needs Work: quizzed at least once, avg accuracy < 60
       Learning:   everything else
-    """
+
+    Deactivated words (app_ideas #18) are excluded via uw.active - this
+    is a snapshot of the deck you're actively working, not a lifetime
+    record, so a word you've turned off shouldn't still occupy a slot
+    in Mastered/Learning/Needs Work. quiz_attempts history itself is
+    untouched (see get_daily_accuracy_trend/get_daily_words_quizzed_trend),
+    so streaks and the historical accuracy chart stay accurate even
+    after a word's deactivated."""
     con = get_connection()
     row = con.execute("""
         SELECT
@@ -618,7 +671,7 @@ def get_progress_stats(user_id: str):
         FROM (
             SELECT uw.word, uw.repetition AS rep, COUNT(a.id) AS n, AVG(a.accuracy) AS avg_accuracy
             FROM user_words uw LEFT JOIN quiz_attempts a ON a.word = uw.word AND a.user_id = uw.user_id
-            WHERE uw.user_id = ?
+            WHERE uw.user_id = ? AND uw.active
             GROUP BY uw.word, uw.repetition
         ) stats
     """, [user_id]).fetchone()
