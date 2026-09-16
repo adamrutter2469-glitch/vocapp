@@ -118,13 +118,25 @@ _schema_lock = threading.Lock()
 _schema_ready = False
 
 
-def get_connection():
-    # No-op after the first call in this process (see r2_storage's own
-    # docstring) - pulling the R2 copy down before opening a connection
-    # is what makes a freshly-started process (a Streamlit Cloud
-    # container coming up after a redeploy, in particular) see the real
-    # data instead of an empty local file.
-    r2_storage.download_db()
+def get_connection(fresh: bool = False):
+    # Plain call: no-op after the first call in this process (see
+    # r2_storage's own docstring) - pulling the R2 copy down before
+    # opening a connection is what makes a freshly-started process (a
+    # Streamlit Cloud container coming up after a redeploy, in
+    # particular) see the real data instead of an empty local file.
+    #
+    # fresh=True (app_ideas #23/#24): forces a re-pull even if this
+    # process already downloaded once. Every db.py function that goes
+    # on to call r2_storage.upload_db() passes this, so a write always
+    # starts from the actual latest R2 state - not whatever this
+    # process's local copy happened to look like at startup, possibly
+    # hours or days stale - right before it re-uploads the whole file.
+    # See r2_storage.py's KNOWN LIMITATION/MITIGATION for why this
+    # matters: that's the exact mechanism behind every "idea status
+    # reverted" incident so far (#16, #19, #23, #24). Read-only callers
+    # never pass this - a read was never what caused the data loss, so
+    # there's no reason to pay an R2 round-trip for one.
+    r2_storage.download_db(force=fresh)
     for attempt in range(_CONNECT_RETRIES):
         try:
             con = duckdb.connect(str(DB_PATH))
@@ -368,7 +380,7 @@ def add_word(user_id: str, word: str, definition: str, part_of_speech: str = "",
     separate step. This is a no-op (TRUE -> TRUE) for a word that was
     already active, so it never surprises anyone re-adding an active
     word purely for a definition refresh."""
-    con = get_connection()
+    con = get_connection(fresh=True)
     w = word.strip()
     con.execute(
         """
@@ -407,7 +419,7 @@ def set_audio_url(word: str, audio_url: str):
     without touching its definition or anything else. No user_id: audio
     is dictionary content (word_content), shared like everything else
     there."""
-    con = get_connection()
+    con = get_connection(fresh=True)
     con.execute("UPDATE word_content SET audio_url = ? WHERE word = ?", [audio_url.strip(), word])
     con.close()
     r2_storage.upload_db()
@@ -420,7 +432,7 @@ def delete_word(user_id: str, word: str):
     word_content row with no user_words referencing it just sits there
     unused afterward - harmless, not worth an extra query to garbage-
     collect it."""
-    con = get_connection()
+    con = get_connection(fresh=True)
     con.execute("DELETE FROM quiz_attempts WHERE user_id = ? AND word = ?", [user_id, word])
     con.execute("DELETE FROM user_words WHERE user_id = ? AND word = ?", [user_id, word])
     con.close()
@@ -444,7 +456,7 @@ def deactivate_word(user_id: str, word: str):
     request, so this function has no UI counterpart there either -
     Quiz Me's deactivate icon is the only place a word gets turned off
     at all."""
-    con = get_connection()
+    con = get_connection(fresh=True)
     con.execute("UPDATE user_words SET active = FALSE WHERE user_id = ? AND word = ?", [user_id, word])
     con.close()
     r2_storage.upload_db()
@@ -609,7 +621,7 @@ def update_schedule(user_id: str, word: str, accuracy: int):
     standard SM-2 interval/ease-factor update. Returns the new schedule
     so the caller can show "next review in N days."
     """
-    con = get_connection()
+    con = get_connection(fresh=True)
     row = con.execute(
         "SELECT repetition, ease_factor, interval_days FROM user_words WHERE user_id = ? AND word = ?",
         [user_id, word],
@@ -780,7 +792,7 @@ def save_attempt(user_id: str, word: str, your_answer: str, accuracy: int, feedb
     data in them) but new attempts just write "" to both and put the
     whole tagged feedback in note, rather than a schema migration to
     drop two now-unused columns."""
-    con = get_connection()
+    con = get_connection(fresh=True)
     con.execute(
         """
         INSERT INTO quiz_attempts (user_id, word, attempt_date, your_answer, accuracy, got_right, got_missed, note)
@@ -846,7 +858,7 @@ def save_user_settings(
     user_id: str, alias: str, auto_add_community_words: bool, share_progress: bool,
     daily_word_target: int = 10, dark_mode: bool = False, handedness: str = "Right",
 ):
-    con = get_connection()
+    con = get_connection(fresh=True)
     con.execute(
         """
         INSERT INTO user_settings
@@ -873,7 +885,7 @@ def add_app_idea(user_id: str, idea_text: str, idea_type: str = "Improvement") -
     """Returns the new idea's id - app_idea_id_seq's nextval, the same
     number displayed everywhere as "ID-0001" (see app.py's format_idea_id)
     - so the submission confirmation can show it immediately."""
-    con = get_connection()
+    con = get_connection(fresh=True)
     idea_id = con.execute(
         "INSERT INTO app_ideas (user_id, idea_text, submitted_at, idea_type, status) "
         "VALUES (?, ?, ?, ?, 'Submitted') RETURNING id",
@@ -919,7 +931,7 @@ def get_all_app_ideas() -> list[dict]:
 def update_app_idea_status(idea_id: int, status: str):
     """Owner-only (enforced in app.py, not here) - marks an idea
     Submitted/Rejected/Completed once it's been reviewed or built."""
-    con = get_connection()
+    con = get_connection(fresh=True)
     con.execute("UPDATE app_ideas SET status = ? WHERE id = ?", [status, idea_id])
     con.close()
     r2_storage.upload_db()

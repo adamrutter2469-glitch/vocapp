@@ -20,26 +20,34 @@ every function here is a no-op: R2 sync layers on top of local storage,
 it doesn't replace the "just run it locally" path that's worked all
 along, so a machine without R2 configured just keeps working local-only.
 
-KNOWN LIMITATION - whole-file, last-writer-wins, no real sync: this
-only actually works cleanly with ONE process's worth of local disk
-state at a time. download_db() pulls once per process and upload_db()
-pushes the WHOLE local file on every write - there's no per-row
-merging and no check that R2 hasn't changed since this process's own
-download. Confirmed live (2026-09-12): the deployed Streamlit Cloud
-app had been running long enough that its own local copy predated a
-batch of app_ideas.status edits made directly against a local
-vocab.duckdb via a one-off script (then pushed with upload_db()) - the
-next ordinary write the LIVE app made (a new app idea being submitted)
-re-uploaded ITS OWN still-stale local file and silently wiped those
-status edits back out, with no error anywhere. Editing the DB directly
-on a machine other than the one actively serving traffic is exactly
-the situation this breaks under; it isn't purely academic - a user
-(app_ideas #19) noticed the reverted statuses before anyone caught it
-in code. Until this gets real conflict handling, avoid one-off local
-DB edits while the deployed app might be alive and could write again
-before that fix is deployed (a git push to main both fixes the code
-AND forces Streamlit Cloud to restart with a fresh download, which is
-the only thing that actually clears a stale in-process copy).
+KNOWN LIMITATION - whole-file, last-writer-wins, no real per-row merge:
+upload_db() pushes the WHOLE local file on every write, so if the
+local copy it's pushing is stale, it silently overwrites whatever
+happened on R2 since. Confirmed live (2026-09-12): the deployed
+Streamlit Cloud app had been running long enough that its own local
+copy predated a batch of app_ideas.status edits made directly against
+a local vocab.duckdb via a one-off script (then pushed with
+upload_db()) - the next ordinary write the LIVE app made (a new app
+idea being submitted) re-uploaded ITS OWN still-stale local file and
+silently wiped those status edits back out, with no error anywhere.
+Not purely academic - a user (app_ideas #19, and again #23/#24) hit
+this before anyone caught it in code.
+
+MITIGATION (app_ideas #23/#24) - download_db() no longer pulls only
+once per process, ever: db.get_connection(fresh=True), used by every
+db.py function that goes on to call upload_db(), forces a fresh pull
+right before that write. This doesn't add real multi-writer locking
+(two genuinely simultaneous writes, in two different processes, in
+the same instant, could still race) - it shrinks the staleness window
+that actually caused every observed incident so far from "this
+process's entire lifetime" (hours to days, for a long-lived Streamlit
+Cloud container) down to "the instant right before this one write."
+For a <=5-person app whose writes are seconds apart at the busiest,
+that's enough to make the failure mode above not reproduce in
+practice, without the complexity of real per-row conflict resolution.
+Read-only functions still use the cheap once-per-process cache
+(get_connection() with no argument) - reads were never what caused
+data loss, so there's no reason to pay an R2 round-trip for those.
 """
 
 import os
@@ -85,20 +93,25 @@ def _get_client():
     return _client
 
 
-def download_db():
-    """Pulls the R2 copy down over the local DB_PATH - once per process,
-    ever; every call after the first (successful or not) is a no-op.
-    Once this process has its own fresh copy, it's the only thing
-    writing to either side (single-user app, and every write here pushes
-    straight back to R2 - see upload_db), so there's nothing new in R2
-    to re-fetch later in the same run.
+def download_db(force: bool = False):
+    """Pulls the R2 copy down over the local DB_PATH.
+
+    Cached by default (force=False, the plain read path via
+    db.get_connection()) - once per process, ever; every call after the
+    first (successful or not) is a no-op, since a read doesn't need
+    anything fresher than "whatever this process already has."
+
+    force=True (db.get_connection(fresh=True), used by every write - see
+    this module's KNOWN LIMITATION/MITIGATION above) always re-pulls,
+    bypassing the cache, so a write builds on the actual latest R2 state
+    instead of a possibly hours-stale local copy.
 
     Silently does nothing if R2 isn't configured, or if the object
     doesn't exist yet in the bucket (first-ever run before anything has
     uploaded a seed copy - db.py's own _ensure_schema creates a fresh
     local file in that case, same as always)."""
     global _downloaded_this_process
-    if _downloaded_this_process:
+    if _downloaded_this_process and not force:
         return
     _downloaded_this_process = True
     client = _get_client()
