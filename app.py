@@ -902,11 +902,25 @@ st.markdown(
     [data-testid="stWidgetLabel"] p {{
         color: {PAL['text']} !important;
     }}
-    /* The (?) help-tooltip icon next to a label (Alias) - an inline
-       SVG using stroke="currentColor", so recoloring the icon's own
-       `color` is what actually changes what's drawn. */
+    /* The (?) help-tooltip icon next to a label (Alias) - an inline SVG
+       using stroke="currentColor" on its <svg> root, so in theory
+       recoloring the icon's own `color` is what changes what's drawn.
+       In practice (app_ideas #22, confirmed live) Streamlit's own base
+       CSS sets `stroke` directly on the circle/path/line children
+       themselves to a hardcoded rgba(<theme textColor>, 0.6) - the
+       same "real text lives one level deeper, with its own competing
+       hardcoded color" pattern already hit this session (top bar
+       identity, Menu/Logout labels, Progress's radio text) - so the
+       `color` override above never actually reaches the drawn stroke;
+       it stayed the LIGHT-mode navy (#001D56 at 60%) even in dark
+       mode, reading as a dull blue dot against the dark background.
+       Setting `stroke` directly on the children, not just `color` on
+       the svg, is what actually wins. */
     [data-testid="stTooltipIcon"] svg {{
         color: {PAL['text']} !important;
+    }}
+    [data-testid="stTooltipIcon"] svg * {{
+        stroke: {PAL['text']} !important;
     }}
     /* Placeholder text ("Type your definition...", the My Words/Add
        Word search boxes, the App Ideas textarea) - browser-default
@@ -951,7 +965,18 @@ st.markdown(
        hardcoded near-white (confirmed live via document.activeElement -
        a real focus style, not the translucent open-state overlay a few
        rules up) - stayed a stark, jarring white box over Dark Mode's
-       dark card even after that overlay got its own dark equivalent. */
+       dark card even after that overlay got its own dark equivalent.
+       Also covers plain details[open] summary, not just :focus/
+       :focus-visible (app_ideas #25, confirmed live) - Streamlit
+       applies that same hardcoded near-white to ANY open summary,
+       focused or not, but this rule originally only overrode the
+       focused case. Expanding a second section (e.g. Completed) moves
+       focus there, leaving the first (e.g. Submitted) open-but-
+       unfocused - exactly the state this rule used to miss, so it fell
+       back to Streamlit's own unreadable light background. A closed
+       summary needs no rule at all here (confirmed live: transparent
+       by default, so the dark page shows through already). */
+    [data-testid="stExpander"] details[open] summary,
     [data-testid="stExpander"] summary:focus,
     [data-testid="stExpander"] summary:focus-visible {{
         background-color: {PAL['accent_tint']} !important;
