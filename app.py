@@ -11,7 +11,7 @@ Phase 4 (polish - images, animations, mobile layout) comes later.
 
 import html
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -776,6 +776,131 @@ st.markdown(
         line-height: 1.4;
     }}
 
+    /* Social tab (app_ideas #10) - weekly leaderboard + cross-user
+       activity feed. Same bordered-card language as Progress's own
+       stat cards above (border_15, 10px radius) rather than a new
+       visual style, so this reads as part of the same app. Every row
+       is <span>, never <div> - same reason as the donut/streak cards
+       above (a <div> inside what st.markdown renders as a <p> gets
+       reparented by the browser, escaping the wrapper Streamlit sizes
+       around; a <span> stays legal there even styled display:flex). */
+    .st-key-social_leaderboard_card, .st-key-social_feed_card {{
+        border: 1px solid {PAL['border_15']};
+        border-radius: 10px;
+        overflow: hidden;
+    }}
+    .social-row {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 13px 16px;
+        border-bottom: 1px solid {PAL['border_08']};
+    }}
+    .social-row:last-child {{ border-bottom: none; }}
+    .social-rank {{
+        flex: none;
+        width: 18px;
+        font-size: 13px;
+        font-weight: 700;
+        color: {PAL['text_55']};
+        text-align: center;
+    }}
+    .social-rank.first {{ color: {PAL['accent']}; }}
+    .social-avatar {{
+        flex: none;
+        width: 30px; height: 30px;
+        border-radius: 50%;
+        color: {PAL['on_accent']};
+        display: flex; align-items: center; justify-content: center;
+        font-size: 13px; font-weight: 700;
+    }}
+    .social-who {{
+        flex: 1 1 auto;
+        min-width: 50px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+    }}
+    .social-who .name {{
+        font-size: 14.5px; font-weight: 600;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }}
+    .social-who .streak {{ font-size: 11px; color: {PAL['text_55']}; }}
+    .social-stat {{ flex: none; min-width: 38px; text-align: right; }}
+    .social-stat .n {{
+        display: block; font-size: 16px; font-weight: 700; line-height: 1.1;
+        font-variant-numeric: tabular-nums;
+    }}
+    .social-stat .lbl {{
+        display: block; font-size: 9px; color: {PAL['text_55']};
+        text-transform: uppercase; letter-spacing: 0.04em; margin-top: 1px;
+    }}
+    .social-feed-row {{
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 11px 16px;
+        border-bottom: 1px solid {PAL['border_08']};
+    }}
+    .social-feed-row:last-child {{ border-bottom: none; }}
+    .social-feed-icon {{
+        flex: none;
+        width: 26px; height: 26px;
+        border-radius: 50%;
+        background: {PAL['accent_tint']};
+        display: flex; align-items: center; justify-content: center;
+        font-size: 12.5px;
+    }}
+    .social-feed-text {{ flex: 1 1 auto; min-width: 50px; font-size: 13.5px; line-height: 1.45; }}
+    .social-feed-text .word {{ font-weight: 600; font-style: italic; color: {PAL['accent']}; }}
+    .social-feed-time {{
+        flex: none;
+        font-size: 11px; color: {PAL['text_55']};
+        padding-top: 2px;
+    }}
+    /* Wrapped in its OWN <span class='social-strip-grid'> (below) rather
+       than putting display:grid directly on the st-key container, the
+       way the donut/streak cards put display:flex directly on theirs -
+       those work because each is sized around a SINGLE markdown call's
+       output; this one needs 4 cells to lay out AS SIBLINGS, and their
+       only shared parent otherwise is the <p> st.markdown itself
+       renders, which isn't reachable to style (confirmed live: without
+       this wrapper, the "grid" had just one child - the whole <p> - so
+       nothing actually arranged side by side). */
+    .st-key-social_totals_strip {{
+        border: 1px solid {PAL['border_15']};
+        border-radius: 10px;
+        overflow: hidden;
+    }}
+    .social-strip-grid {{
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1px;
+        background: {PAL['border_08']};
+    }}
+    .social-strip-cell {{
+        display: block;
+        background: {PAL['surface']};
+        padding: 13px 8px;
+        text-align: center;
+    }}
+    .social-strip-cell .n {{
+        display: block; font-size: 19px; font-weight: 700;
+        font-variant-numeric: tabular-nums;
+    }}
+    .social-strip-cell .lbl {{
+        display: block; font-size: 10px; color: {PAL['text_65']}; margin-top: 2px;
+    }}
+    .social-empty {{
+        border: 1px dashed {PAL['border_18']};
+        border-radius: 10px;
+        padding: 20px 16px;
+        text-align: center;
+        color: {PAL['text_65']};
+        font-size: 13.5px;
+        line-height: 1.5;
+    }}
+
     /* Progress tab: the combo chart itself gets an explicit pixel width
        (see chart_width in app.py, scaled to however many days/bars it's
        showing) rather than stretching to the container - this wrapper
@@ -1051,7 +1176,7 @@ def _uid() -> str:
 # for free, no elif chain needed).
 st.session_state.setdefault("current_page", "Quiz Me")
 st.session_state.setdefault("nav_open", False)
-_PAGES = ["Quiz Me", "Add Word", "My Words", "Progress"]
+_PAGES = ["Quiz Me", "Add Word", "My Words", "Progress", "Social"]
 # Account/meta pages - listed at the bottom of the drawer, visually set
 # apart from the 4 core pages above by a divider (see the drawer's own
 # render below), not mixed into the same button stack.
@@ -2359,6 +2484,109 @@ if st.session_state["current_page"] == "Progress":
             st.caption("Quiz on a few more days to see a trend here.")
 
 # ------------------------------------------------------------
+# Social
+# ------------------------------------------------------------
+# A lightweight weekly leaderboard + cross-user activity feed
+# (app_ideas #10) - entirely opt-in via Settings' Share My Progress
+# toggle (see db.get_social_leaderboard/get_social_feed); someone who
+# hasn't turned that on neither appears here themselves nor sees
+# anyone else, consistent with that setting's own stated purpose
+# ("let other users see your progress") since before this page existed
+# to use it.
+def _relative_time(dt) -> str:
+    """"2h ago"/"yesterday"/"3d ago" for the activity feed - falls back
+    to a plain date past a week out, since "9d ago" reads worse than
+    "Sep 21" once it's been a while. `dt` is a stored attempt_date/
+    date_added - naive but really UTC (see db.LOCAL_TZ's own
+    docstring), so it's stamped UTC before diffing against "now", not
+    diffed as if it were already local."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    seconds = (datetime.now(timezone.utc) - dt).total_seconds()
+    if seconds < 3600:
+        return f"{max(1, int(seconds // 60))}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    days = int(seconds // 86400)
+    if days == 1:
+        return "yesterday"
+    if days < 7:
+        return f"{days}d ago"
+    return dt.astimezone(db.LOCAL_TZ).strftime("%b %d")
+
+
+if st.session_state["current_page"] == "Social":
+    st.subheader("Social")
+
+    board = db.get_social_leaderboard()
+    if not board:
+        st.markdown(
+            "<span class='social-empty'>Nobody's sharing their progress yet. "
+            "Turn on <b>Share My Progress</b> in Settings to be the first, "
+            "and invite others to do the same.</span>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown("##### Leaderboard")
+        st.caption("Ranked by quizzes taken this week - resets every Monday.")
+        rows_html = []
+        for i, row in enumerate(board):
+            avatar_color = PAL['accent'] if i == 0 else PAL['accent_light']
+            initial = row["display_name"][:1].upper() or "?"
+            streak_text = f"🔥 {row['streak']}-day streak" if row["streak"] > 0 else "No streak yet"
+            rows_html.append(
+                f"<span class='social-row'>"
+                f"<span class='social-rank{' first' if i == 0 else ''}'>{i + 1}</span>"
+                f"<span class='social-avatar' style='background:{avatar_color}'>{initial}</span>"
+                f"<span class='social-who'>"
+                f"<span class='name'>{html.escape(row['display_name'])}</span>"
+                f"<span class='streak'>{streak_text}</span>"
+                f"</span>"
+                f"<span class='social-stat'><span class='n'>{row['quizzes']}</span><span class='lbl'>Quizzes</span></span>"
+                f"<span class='social-stat'><span class='n'>{row['added']}</span><span class='lbl'>Added</span></span>"
+                f"<span class='social-stat'><span class='n'>{row['mastered']}</span><span class='lbl'>Mastered</span></span>"
+                f"</span>"
+            )
+        with st.container(key="social_leaderboard_card"):
+            st.markdown("".join(rows_html), unsafe_allow_html=True)
+
+        feed = db.get_social_feed()
+        st.markdown("##### Recent activity")
+        if not feed:
+            st.caption("No activity in the last 7 days.")
+        else:
+            feed_html = []
+            for event in feed:
+                icon = "🏆" if event["kind"] == "mastered" else "➕"
+                verb = "mastered" if event["kind"] == "mastered" else "added"
+                feed_html.append(
+                    f"<span class='social-feed-row'>"
+                    f"<span class='social-feed-icon'>{icon}</span>"
+                    f"<span class='social-feed-text'><b>{html.escape(event['display_name'])}</b> {verb} "
+                    f"<span class='word'>{html.escape(event['word'])}</span></span>"
+                    f"<span class='social-feed-time'>{_relative_time(event['when'])}</span>"
+                    f"</span>"
+                )
+            with st.container(key="social_feed_card"):
+                st.markdown("".join(feed_html), unsafe_allow_html=True)
+
+        st.markdown("##### Group total, this week")
+        total_quizzes = sum(r["quizzes"] for r in board)
+        total_added = sum(r["added"] for r in board)
+        total_mastered = sum(r["mastered"] for r in board)
+        active_count = sum(1 for r in board if r["quizzes"] > 0)
+        with st.container(key="social_totals_strip"):
+            st.markdown(
+                "<span class='social-strip-grid'>"
+                f"<span class='social-strip-cell'><span class='n'>{total_quizzes}</span><span class='lbl'>Quizzes</span></span>"
+                f"<span class='social-strip-cell'><span class='n'>{total_added}</span><span class='lbl'>Words added</span></span>"
+                f"<span class='social-strip-cell'><span class='n'>{total_mastered}</span><span class='lbl'>Mastered</span></span>"
+                f"<span class='social-strip-cell'><span class='n'>{active_count}/{len(board)}</span><span class='lbl'>Active</span></span>"
+                "</span>",
+                unsafe_allow_html=True,
+            )
+
+# ------------------------------------------------------------
 # Settings
 # ------------------------------------------------------------
 # Per-user preferences (db.user_settings) - alias is purely cosmetic
@@ -2501,6 +2729,14 @@ and quiz volume over time.
   times it's been quizzed.
 - **Learning** — everything else: not yet quizzed, or making progress
   but hasn't cleared Mastered's streak-and-accuracy bar yet.
+""",
+        "Social": """
+A weekly leaderboard and activity feed for whoever's turned on
+**Share My Progress** in Settings - quizzes taken, words added, and
+words mastered this week, plus a running feed of everyone's recent
+mastered/added words. Resets every Monday, so it's always a fresh
+week, not a lifetime score. Nobody appears here, including you,
+without opting in first.
 """,
         "Settings": """
 Personalize your account: a short display alias, your daily word

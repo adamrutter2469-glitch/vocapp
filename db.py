@@ -935,3 +935,124 @@ def update_app_idea_status(idea_id: int, status: str):
     con.execute("UPDATE app_ideas SET status = ? WHERE id = ?", [status, idea_id])
     con.close()
     r2_storage.upload_db()
+
+
+def _display_name(user_id: str, alias: str) -> str:
+    """alias if they've set one; otherwise a readable fallback derived
+    from their email rather than showing the raw address on the Social
+    tab (app_ideas #10) - "riley.kaitlyn96@gmail.com" -> "Riley". Takes
+    just the part before the first '.' or '@' and capitalizes it; for
+    an email with no '.' before the '@' this is cruder (the whole
+    local-part, capitalized) but still better than the full address."""
+    if alias:
+        return alias
+    local_part = user_id.split("@")[0]
+    return local_part.split(".")[0].capitalize()
+
+
+def _mastered_this_window(con, user_id: str, cutoff) -> list[str]:
+    """Words meeting the normal Mastered bar (repetition >= 3, avg
+    accuracy >= 80 - same as get_progress_stats) with at least one
+    attempt since `cutoff`. Shared by get_social_leaderboard (count)
+    and get_social_feed (the words themselves) so the two can't drift
+    apart on what counts.
+
+    This is an approximation, not an exact "just crossed into Mastered"
+    event log - a word mastered weeks ago that's simply revisited in
+    the window still counts. No schema change (a real mastery-event
+    table) felt worth it for a social feature's nice-to-have "recently
+    mastered" list; revisit if that approximation turns out to matter
+    in practice."""
+    rows = con.execute(
+        """
+        SELECT uw.word
+        FROM user_words uw JOIN quiz_attempts a ON a.word = uw.word AND a.user_id = uw.user_id
+        WHERE uw.user_id = ? AND uw.active
+        GROUP BY uw.word, uw.repetition
+        HAVING uw.repetition >= 3 AND AVG(a.accuracy) >= 80 AND MAX(a.attempt_date) >= ?
+        """,
+        [user_id, cutoff],
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def get_social_leaderboard(days: int = 7) -> list[dict]:
+    """One row per user who's opted in via Settings' Share My Progress
+    toggle (app_ideas #10) - nobody appears here without explicitly
+    turning that on, same privacy gate the setting already promised
+    before this was the feature using it. Ranked by quizzes taken in
+    the last `days` days, not lifetime totals - a cumulative ranking
+    would just always favor whoever's used the app longest; a rolling
+    window stays fair and gives everyone a fresh start regularly.
+
+    Each row: user_id, display_name (see _display_name), quizzes/
+    added/mastered counts in the window, and streak - reusing
+    get_quiz_streak with THIS user's own daily_word_target, the exact
+    same definition their own Progress tab's streak already uses.
+
+    Includes opted-in users with zero activity in the window too
+    (sorted to the bottom) rather than hiding them - seeing who's quiet
+    this week is as real a signal as seeing who's active."""
+    con = get_connection()
+    opted_in = con.execute(
+        "SELECT user_id, alias, daily_word_target FROM user_settings WHERE share_progress = TRUE"
+    ).fetchall()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = []
+    for user_id, alias, daily_target in opted_in:
+        quizzes = con.execute(
+            "SELECT COUNT(*) FROM quiz_attempts WHERE user_id = ? AND attempt_date >= ?",
+            [user_id, cutoff],
+        ).fetchone()[0]
+        added = con.execute(
+            "SELECT COUNT(*) FROM user_words WHERE user_id = ? AND date_added >= ?",
+            [user_id, cutoff],
+        ).fetchone()[0]
+        mastered = len(_mastered_this_window(con, user_id, cutoff))
+        rows.append({
+            "user_id": user_id,
+            "display_name": _display_name(user_id, alias),
+            "quizzes": quizzes,
+            "added": added,
+            "mastered": mastered,
+            "streak": get_quiz_streak(user_id, threshold=daily_target or 10),
+        })
+    con.close()
+    rows.sort(key=lambda r: r["quizzes"], reverse=True)
+    return rows
+
+
+def get_social_feed(days: int = 7, limit: int = 15) -> list[dict]:
+    """Cross-user "added" and "mastered" events from the last `days`
+    days, newest first, capped at `limit` (app_ideas #10) - same opt-in
+    (user_settings.share_progress) and same Mastered approximation as
+    get_social_leaderboard (see _mastered_this_window's docstring).
+    Each event: kind ("added"/"mastered"), display_name, word, when."""
+    con = get_connection()
+    opted_in = con.execute(
+        "SELECT user_id, alias FROM user_settings WHERE share_progress = TRUE"
+    ).fetchall()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    events = []
+    for user_id, alias in opted_in:
+        name = _display_name(user_id, alias)
+        added = con.execute(
+            "SELECT word, date_added FROM user_words WHERE user_id = ? AND date_added >= ?",
+            [user_id, cutoff],
+        ).fetchall()
+        for word, when in added:
+            events.append({"kind": "added", "display_name": name, "word": word, "when": when})
+        for word in _mastered_this_window(con, user_id, cutoff):
+            # _mastered_this_window doesn't return the triggering
+            # attempt's own timestamp (just the word) - re-fetch it
+            # here only for the words that actually qualified, rather
+            # than threading a second return value through a function
+            # also used just for a plain count in the leaderboard.
+            last_q = con.execute(
+                "SELECT MAX(attempt_date) FROM quiz_attempts WHERE user_id = ? AND word = ?",
+                [user_id, word],
+            ).fetchone()[0]
+            events.append({"kind": "mastered", "display_name": name, "word": word, "when": last_q})
+    con.close()
+    events.sort(key=lambda e: e["when"], reverse=True)
+    return events[:limit]
