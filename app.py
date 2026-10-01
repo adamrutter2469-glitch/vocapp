@@ -2330,31 +2330,47 @@ if st.session_state["current_page"] == "Progress":
             # buckets - so ordinal sidesteps the whole tick-interval
             # question: exactly one tick per actual date, always.
             date_order = sorted(set(acc_df["date"]) | set(words_df["date"]))
-            # Per-bar step: DEFAULT_WINDOW_DAYS bars (the default "Last
-            # 2 weeks" view) would exactly fill the chart's real
-            # measured width (PROGRESS_CHART_WIDTH_PX, from
-            # .st-key-progress_chart_scroll's getBoundingClientRect -
-            # Streamlit's centered layout caps it there regardless of
-            # viewport size) at zero gap - then narrowed another 30% on
-            # top of that per its own ask, still touching edge to edge
-            # (the darker fill's own stroke outline is what keeps
-            # adjacent bars visually separable - see mark_bar below).
-            # Net effect: the default view no longer fills the full
-            # width edge to edge (some blank space on the right instead)
-            # - an accepted trade-off for bars this much narrower being
-            # possible at all. Beyond 2 weeks ("All time" with a longer
-            # history), the chart keeps growing at the same per-bar step
-            # instead of cramming more bars into a fixed width, and
-            # .st-key-progress_chart_scroll's overflow-x handles the
-            # rest.
+            # "Last 2 weeks" (the default) now sizes itself to the
+            # chart's REAL container width (width="container" below)
+            # instead of a hardcoded desktop pixel figure (app_ideas
+            # #27 - "I really want the 2 week view to fit the screen on
+            # mobile"). The old fixed PROGRESS_CHART_WIDTH_PX this used
+            # to scale off of was measured on DESKTOP
+            # (getBoundingClientRect at 704px) - on an actual phone-
+            # width screen, a chart sized off that number came out
+            # wider than the real viewport, so even the default 2-week
+            # view needed horizontal scrolling just to see it, which
+            # defeated the entire point of defaulting to a short window.
+            # Band padding (RESPONSIVE_PADDING_INNER/OUTER below)
+            # expresses the same narrow-bar look as a FRACTION of
+            # whatever width the chart actually gets, rather than an
+            # absolute pixel count - so it comes out proportionally
+            # this narrow, and exactly fills the real container with no
+            # leftover blank space and no scrolling, on any screen.
+            #
+            # "All time" deliberately keeps the OLD fixed-pixel-per-bar
+            # approach (BAR_STEP_PX/chart_width below) - a long history
+            # has too many bars to ever fit one screen at a readable
+            # width, so that view is SUPPOSED to scroll
+            # (.st-key-progress_chart_scroll's own overflow-x), at one
+            # consistent per-bar width no matter how many bars that
+            # ends up being.
             PROGRESS_CHART_WIDTH_PX = 704
             DEFAULT_WINDOW_DAYS = 14
             # 0.7 was the original per-bar fill fraction; the extra 0.85
             # on top is a further 15% narrower per user request ("make
-            # the bar widths 15% less").
+            # the bar widths 15% less") - both still drive All Time's
+            # fixed-pixel sizing below.
             BAR_STEP_PX = (PROGRESS_CHART_WIDTH_PX / DEFAULT_WINDOW_DAYS) * 0.7 * 0.85
             MIN_CHART_WIDTH_PX = 300
             chart_width = max(MIN_CHART_WIDTH_PX, len(date_order) * BAR_STEP_PX)
+            # ~60% bar / ~40% gap, matching BAR_STEP_PX's own desktop
+            # proportions closely enough - just expressed as a fraction
+            # of the band instead of a pixel count, which is what makes
+            # it responsive at all.
+            is_alltime = st.session_state["progress_chart_range"] == "All time"
+            RESPONSIVE_PADDING_INNER = 0.45
+            RESPONSIVE_PADDING_OUTER = 0.15
             # "8/14" not "Aug 14" - shorter, and strftime's portable
             # cross-platform codes don't include a no-leading-zero month/
             # day (%-m/%-d is Linux/Mac only, not Windows) - built by
@@ -2408,14 +2424,35 @@ if st.session_state["current_page"] == "Progress":
             # the date strings as one more plain text layer, exactly
             # like the value labels above them - same trick, not
             # dependent on axis merging behavior at all.
-            date_x = alt.X("date_label:O", sort=label_order, axis=None)
+            # All Time keeps Vega-Lite's own default band scale (bar
+            # width comes from the explicit pixel `size=` below
+            # instead) - the `scale` kwarg is omitted entirely for it,
+            # not passed as scale=None: Altair forwards None straight
+            # through as Vega-Lite's own `"scale": null`, which doesn't
+            # mean "use the default" but "disable scaling altogether" -
+            # for an ordinal string field that's an identity mapping,
+            # so Vega-Lite tried to use the literal date label ("9/17")
+            # as a pixel coordinate (confirmed live: broken
+            # `translate(9/17,...)` transforms in the console, chart
+            # reduced to one stray bar). Last 2 Weeks sets
+            # paddingInner/Outer on a REAL band scale instead, so bar
+            # width/gap come out as a proportion of whatever width
+            # "container" sizing (below) actually hands it.
+            x_scale_kwargs = {} if is_alltime else {
+                "scale": alt.Scale(paddingInner=RESPONSIVE_PADDING_INNER, paddingOuter=RESPONSIVE_PADDING_OUTER),
+            }
+            date_x = alt.X("date_label:O", sort=label_order, axis=None, **x_scale_kwargs)
             bar = (
                 alt.Chart(words_df)
                 # Light blue fill / dark blue stroke - swapped from the
                 # original dark fill / light stroke per user request
-                # ("bars...light blue, labels dark blue").
-                .mark_bar(color=PAL['bar_fill'], stroke=PAL['text'], strokeWidth=1, size=BAR_STEP_PX,
-                          cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+                # ("bars...light blue, labels dark blue"). size=
+                # BAR_STEP_PX only for All Time - Last 2 Weeks instead
+                # lets the band scale's own paddingInner (date_x above)
+                # determine bar width, which is what makes it responsive.
+                .mark_bar(color=PAL['bar_fill'], stroke=PAL['text'], strokeWidth=1,
+                          cornerRadiusTopLeft=2, cornerRadiusTopRight=2,
+                          **({"size": BAR_STEP_PX} if is_alltime else {}))
                 .encode(
                     x=date_x,
                     y=alt.Y("words_quizzed:Q", axis=None, scale=shared_scale),
@@ -2474,11 +2511,17 @@ if st.session_state["current_page"] == "Progress":
             # chart is an independent rendering target, not HTML this
             # file's own styles reach) - confirmed live as a jarring
             # white box in Dark Mode until this was added.
+            # width="container" (Last 2 Weeks) hands Vega-Embed the
+            # chart's real on-screen width via its own ResizeObserver,
+            # instead of the fixed chart_width pixel figure All Time
+            # still uses - use_container_width=True is what actually
+            # gets Streamlit's wrapper to measure and pass that real
+            # width through, rather than its own default sizing.
             combo = alt.layer(bar, bar_labels, date_labels_layer, line, line_points, line_labels).properties(
-                height=260, width=chart_width, background=PAL['bg'],
+                height=260, width=(chart_width if is_alltime else "container"), background=PAL['bg'],
             )
             with st.container(key="progress_chart_scroll"):
-                st.altair_chart(combo, use_container_width=False)
+                st.altair_chart(combo, use_container_width=not is_alltime)
 
             with st.container(key="progress_chart_legend"):
                 st.markdown(
