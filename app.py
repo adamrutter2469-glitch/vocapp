@@ -440,13 +440,25 @@ st.markdown(
         flex: 0 0 auto !important;
         min-width: 0 !important;
     }}
-    /* Room at the bottom of the page so the fixed footer never covers the
-       last couple of words in the list. Applies to every tab (Streamlit
-       keeps all tab panels in one shared block container), but only My
-       Words actually renders the footer, so it's just a bit of harmless
-       extra scroll space elsewhere. */
+    /* Room at the bottom of the page so nothing real ends up sitting
+       under the floating Menu button once you scroll all the way down
+       (app_ideas #26). Applies to every tab (Streamlit keeps all tab
+       panels in one shared block container), same "size once for the
+       FAB, which sits in the same place everywhere" approach the FAB's
+       own bottom:88px already uses (see .st-key-menu_fab below).
+
+       Was 4rem (64px) - enough to clear My Words' OWN sticky footer
+       (~64px tall) sitting right at the viewport edge below the FAB,
+       but nothing left over to ALSO clear the FAB itself, which floats
+       higher up (bottom:88px, 56px tall, so its own top edge sits
+       144px above the viewport bottom) - fine on My Words, where the
+       footer was the closer obstacle, but not on any other page, where
+       the FAB is the only thing in the way and 64px doesn't reach it
+       (confirmed live: the Social tab's bottom stat row sat partly
+       behind it). 11rem (176px) clears the FAB's own top edge with
+       real breathing room above it, on every page including My Words. */
     [data-testid="stMainBlockContainer"] {{
-        padding-bottom: 4rem;
+        padding-bottom: 11rem;
     }}
 
     /* Quiz Me's Submit/No Clue pair - same shrink-wrap as elsewhere so
