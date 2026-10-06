@@ -137,6 +137,18 @@ def get_connection(fresh: bool = False):
     # never pass this - a read was never what caused the data loss, so
     # there's no reason to pay an R2 round-trip for one.
     r2_storage.download_db(force=fresh)
+    if fresh:
+        # A forced download REPLACES the local file with R2's copy, which
+        # predates any schema change this process has made but not yet
+        # uploaded (found live adding the avatar_* columns, app_ideas
+        # #30: Settings' Save re-downloaded R2's column-less copy, then
+        # its INSERT failed with "avatar_icon not found" - the
+        # once-per-process _schema_ready flag meant the migration never
+        # re-ran on the new file). _create_schema is idempotent
+        # (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS), so re-running it
+        # on every fresh pull is safe, just a few cheap DDL statements.
+        global _schema_ready
+        _schema_ready = False
     for attempt in range(_CONNECT_RETRIES):
         try:
             con = duckdb.connect(str(DB_PATH))
@@ -249,6 +261,17 @@ def _create_schema(con):
     con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS daily_word_target INTEGER DEFAULT 10")
     con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dark_mode BOOLEAN DEFAULT FALSE")
     con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS handedness TEXT DEFAULT 'Right'")
+    # avatar_* (app_ideas #30) - the Social tab's leaderboard avatar: a
+    # glyph (avatar_icon) in the secondary color, on a primary-color
+    # circle, ringed in the secondary. Stored as short KEYS ("star",
+    # "navy", "sky"), not hex/markup - app.py owns what each key looks
+    # like, so retuning a palette later updates everyone's avatar
+    # without a data migration. NULL = never picked: the leaderboard
+    # falls back to the old letter-in-a-circle. No NOT NULL/DEFAULT
+    # beyond NULL, same ALTER limitation as the columns above.
+    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_icon TEXT")
+    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_primary TEXT")
+    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_secondary TEXT")
     con.execute("CREATE SEQUENCE IF NOT EXISTS app_idea_id_seq START 1")
     con.execute("""
         CREATE TABLE IF NOT EXISTS app_ideas (
@@ -831,7 +854,8 @@ def get_user_settings(user_id: str) -> dict:
     Settings' own UI relies on always getting a real dict back."""
     con = get_connection()
     row = con.execute(
-        "SELECT alias, auto_add_community_words, share_progress, daily_word_target, dark_mode, handedness "
+        "SELECT alias, auto_add_community_words, share_progress, daily_word_target, dark_mode, handedness, "
+        "avatar_icon, avatar_primary, avatar_secondary "
         "FROM user_settings WHERE user_id = ?",
         [user_id],
     ).fetchone()
@@ -840,6 +864,7 @@ def get_user_settings(user_id: str) -> dict:
         return {
             "alias": "", "auto_add_community_words": False, "share_progress": False,
             "daily_word_target": 10, "dark_mode": False, "handedness": "Right",
+            "avatar_icon": None, "avatar_primary": None, "avatar_secondary": None,
         }
     return {
         "alias": row[0] or "",
@@ -851,30 +876,38 @@ def get_user_settings(user_id: str) -> dict:
         "daily_word_target": row[3] if row[3] is not None else 10,
         "dark_mode": bool(row[4]),
         "handedness": row[5] or "Right",
+        "avatar_icon": row[6], "avatar_primary": row[7], "avatar_secondary": row[8],
     }
 
 
 def save_user_settings(
     user_id: str, alias: str, auto_add_community_words: bool, share_progress: bool,
     daily_word_target: int = 10, dark_mode: bool = False, handedness: str = "Right",
+    avatar_icon: str | None = None, avatar_primary: str | None = None,
+    avatar_secondary: str | None = None,
 ):
     con = get_connection(fresh=True)
     con.execute(
         """
         INSERT INTO user_settings
-            (user_id, alias, auto_add_community_words, share_progress, daily_word_target, dark_mode, handedness)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (user_id, alias, auto_add_community_words, share_progress, daily_word_target, dark_mode, handedness,
+             avatar_icon, avatar_primary, avatar_secondary)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (user_id) DO UPDATE SET
             alias = EXCLUDED.alias,
             auto_add_community_words = EXCLUDED.auto_add_community_words,
             share_progress = EXCLUDED.share_progress,
             daily_word_target = EXCLUDED.daily_word_target,
             dark_mode = EXCLUDED.dark_mode,
-            handedness = EXCLUDED.handedness
+            handedness = EXCLUDED.handedness,
+            avatar_icon = EXCLUDED.avatar_icon,
+            avatar_primary = EXCLUDED.avatar_primary,
+            avatar_secondary = EXCLUDED.avatar_secondary
         """,
         [
             user_id, alias.strip()[:10], auto_add_community_words, share_progress,
             daily_word_target, dark_mode, handedness,
+            avatar_icon, avatar_primary, avatar_secondary,
         ],
     )
     con.close()
@@ -995,11 +1028,12 @@ def get_social_leaderboard(days: int = 7) -> list[dict]:
     this week is as real a signal as seeing who's active."""
     con = get_connection()
     opted_in = con.execute(
-        "SELECT user_id, alias, daily_word_target FROM user_settings WHERE share_progress = TRUE"
+        "SELECT user_id, alias, daily_word_target, avatar_icon, avatar_primary, avatar_secondary "
+        "FROM user_settings WHERE share_progress = TRUE"
     ).fetchall()
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     rows = []
-    for user_id, alias, daily_target in opted_in:
+    for user_id, alias, daily_target, avatar_icon, avatar_primary, avatar_secondary in opted_in:
         quizzes = con.execute(
             "SELECT COUNT(*) FROM quiz_attempts WHERE user_id = ? AND attempt_date >= ?",
             [user_id, cutoff],
@@ -1016,6 +1050,11 @@ def get_social_leaderboard(days: int = 7) -> list[dict]:
             "added": added,
             "mastered": mastered,
             "streak": get_quiz_streak(user_id, threshold=daily_target or 10),
+            # app_ideas #30 - raw keys (None if never picked); app.py
+            # resolves them to real colors/glyph.
+            "avatar_icon": avatar_icon,
+            "avatar_primary": avatar_primary,
+            "avatar_secondary": avatar_secondary,
         })
     con.close()
     rows.sort(key=lambda r: r["quizzes"], reverse=True)

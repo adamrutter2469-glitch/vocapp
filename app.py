@@ -84,6 +84,68 @@ PAL = {
     "on_accent": "#FFFFFF",
 }
 
+# Social-tab avatar choices (app_ideas #30). db.user_settings stores just
+# the KEYS (avatar_icon/avatar_primary/avatar_secondary) - what each one
+# actually looks like lives here, so retuning a palette later updates
+# everyone's avatar with no data migration. Icons are Material Symbols
+# ligature names (the icon font Streamlit already ships - single-color
+# glyphs that take whatever `color` they're given). A primary is the
+# darker circle fill; a secondary is the lighter ring + glyph color -
+# any primary pairs with any secondary.
+AVATAR_ICONS = [
+    "star", "favorite", "menu_book", "eco", "local_fire_department",
+    "dark_mode", "wb_sunny", "bolt", "workspace_premium", "music_note",
+    "pets", "cloud", "landscape", "anchor", "key",
+    "diamond", "rocket_launch", "coffee", "lightbulb", "school",
+    "extension", "flag", "water_drop", "ac_unit", "cruelty_free",
+    "forest", "sailing", "edit", "public", "psychology",
+]
+AVATAR_PRIMARY = {
+    "navy": ("#1F3C88", "Navy"), "teal": ("#0B6E6E", "Teal"),
+    "forest": ("#2E7D32", "Forest"), "purple": ("#6A1B9A", "Purple"),
+    "crimson": ("#B71C1C", "Crimson"), "orange": ("#C2570C", "Burnt orange"),
+    "slate": ("#37474F", "Slate"), "magenta": ("#AD1457", "Magenta"),
+}
+AVATAR_SECONDARY = {
+    "sky": ("#8DB8FF", "Sky"), "mint": ("#7FDCC0", "Mint"),
+    "lime": ("#AEDB7A", "Lime"), "lavender": ("#C79EF5", "Lavender"),
+    "blush": ("#F5A3A3", "Blush"), "apricot": ("#F5C16C", "Apricot"),
+    "butter": ("#F0D95C", "Butter"), "mist": ("#AAB8C8", "Mist"),
+}
+DEFAULT_AVATAR_PRIMARY = "navy"
+DEFAULT_AVATAR_SECONDARY = "sky"
+
+
+def _avatar_pill_color_css(widget_key: str, palette: dict) -> str:
+    """A small colored dot before each option of an st.pills color
+    picker (Settings) - pills have no per-option color of their own, so
+    this paints one by position (nth-child), in the same order as
+    `palette`. Built here and interpolated into the big stylesheet
+    below rather than hand-writing 16 near-identical rules."""
+    return "".join(
+        f".st-key-{widget_key} [data-testid=\"stButtonGroup\"] button:nth-child({i}) p::before {{"
+        f" content:''; display:inline-block; width:11px; height:11px; border-radius:50%;"
+        f" background:{hex_}; margin-right:7px; vertical-align:-1px;"
+        f" box-shadow: 0 0 0 1px rgba(128,128,128,0.45); }}\n"
+        for i, (hex_, _name) in enumerate(palette.values(), start=1)
+    )
+
+
+def _avatar_html(icon, primary_key, secondary_key, initial, fallback_bg) -> str:
+    """The leaderboard avatar circle, as <span>s only (see the Social CSS
+    for why). Picked icon -> primary-color circle ringed in the
+    secondary, glyph in the secondary. No icon picked (never chose one,
+    or an unrecognized stored key) -> the original letter-in-a-circle in
+    `fallback_bg`."""
+    if icon in AVATAR_ICONS:
+        primary = AVATAR_PRIMARY.get(primary_key, AVATAR_PRIMARY[DEFAULT_AVATAR_PRIMARY])[0]
+        secondary = AVATAR_SECONDARY.get(secondary_key, AVATAR_SECONDARY[DEFAULT_AVATAR_SECONDARY])[0]
+        return (
+            f"<span class='social-avatar icon' style='background:{primary};border-color:{secondary};color:{secondary}'>"
+            f"<span class='ms'>{icon}</span></span>"
+        )
+    return f"<span class='social-avatar' style='background:{fallback_bg}'>{initial}</span>"
+
 
 def _left_handed_enabled() -> bool:
     """Whether the floating Menu button/drawer should sit on the left
@@ -839,6 +901,46 @@ st.markdown(
         display: flex; align-items: center; justify-content: center;
         font-size: 13px; font-weight: 700;
     }}
+    /* Picked-icon variant (app_ideas #30): a real ring (the secondary
+       color, set inline along with the fill) around a glyph from the
+       Material Symbols font Streamlit already ships. box-sizing keeps
+       the ring inside the same 30px as the letter version. */
+    .social-avatar.icon {{
+        box-sizing: border-box;
+        border: 2px solid transparent;
+    }}
+    .social-avatar .ms {{
+        font-family: 'Material Symbols Rounded';
+        font-size: 18px;
+        line-height: 1;
+        font-weight: 400;
+        letter-spacing: normal;
+        text-transform: none;
+        font-variation-settings: 'FILL' 1;
+    }}
+    /* st.pills (Settings' icon/color pickers) ship hardcoded light-theme
+       colors - confirmed live: bright white buttons with navy text on
+       the dark page. Same "real text lives one level deeper" pattern as
+       elsewhere, so the label <p>/icon <span> inside are set too, not
+       just the button. */
+    button[data-variant="pills"] {{
+        background-color: {PAL['surface']} !important;
+        border-color: {PAL['border_18']} !important;
+    }}
+    button[data-variant="pills"], button[data-variant="pills"] p, button[data-variant="pills"] span {{
+        color: {PAL['text']} !important;
+    }}
+    button[data-variant="pills"][data-selected="true"] {{
+        background-color: {PAL['accent_tint']} !important;
+        border-color: {PAL['accent']} !important;
+    }}
+    button[data-variant="pills"][data-selected="true"], button[data-variant="pills"][data-selected="true"] p,
+    button[data-variant="pills"][data-selected="true"] span {{
+        color: {PAL['accent_light'] if _DARK else PAL['accent']} !important;
+    }}
+    /* Settings' color pickers: a swatch dot per option */
+    {_avatar_pill_color_css("settings_avatar_primary", AVATAR_PRIMARY)}
+    {_avatar_pill_color_css("settings_avatar_secondary", AVATAR_SECONDARY)}
     .social-who {{
         flex: 1 1 auto;
         min-width: 50px;
@@ -2626,12 +2728,12 @@ if st.session_state["current_page"] == "Social":
         rows_html = []
         for i, row in enumerate(board):
             avatar_color = PAL['accent'] if i == 0 else PAL['accent_light']
-            initial = row["display_name"][:1].upper() or "?"
+            initial = html.escape(row["display_name"][:1].upper() or "?")
             streak_text = f"🔥 {row['streak']}-day streak" if row["streak"] > 0 else "No streak yet"
             rows_html.append(
                 f"<span class='social-row'>"
                 f"<span class='social-rank{' first' if i == 0 else ''}'>{i + 1}</span>"
-                f"<span class='social-avatar' style='background:{avatar_color}'>{initial}</span>"
+                f"{_avatar_html(row['avatar_icon'], row['avatar_primary'], row['avatar_secondary'], initial, avatar_color)}"
                 f"<span class='social-who'>"
                 f"<span class='name'>{html.escape(row['display_name'])}</span>"
                 f"<span class='streak'>{streak_text}</span>"
@@ -2701,6 +2803,13 @@ if st.session_state["current_page"] == "Settings":
     st.session_state.setdefault("settings_daily_target", _settings["daily_word_target"])
     st.session_state.setdefault("settings_dark_mode", "Yes" if _settings["dark_mode"] else "No")
     st.session_state.setdefault("settings_handedness", _settings["handedness"])
+    st.session_state.setdefault("settings_avatar_icon", _settings["avatar_icon"])
+    st.session_state.setdefault(
+        "settings_avatar_primary", _settings["avatar_primary"] or DEFAULT_AVATAR_PRIMARY
+    )
+    st.session_state.setdefault(
+        "settings_avatar_secondary", _settings["avatar_secondary"] or DEFAULT_AVATAR_SECONDARY
+    )
 
     # Centered and narrower than a full-width form (see
     # .st-key-settings_form CSS) - per user request: on a left-handed
@@ -2759,6 +2868,34 @@ if st.session_state["current_page"] == "Settings":
             horizontal=True, label_visibility="collapsed",
         )
 
+        # Leaderboard avatar (app_ideas #30) - pick a glyph, a darker
+        # primary (circle fill), and a lighter secondary (ring + glyph).
+        # pills, not a dropdown, so every option shows at once; deselecting
+        # the icon goes back to the plain letter-in-a-circle.
+        st.markdown("**Leaderboard Icon**")
+        st.caption("Shown on the Social tab. Tap the selected one again to go back to your initial.")
+        st.pills(
+            "Leaderboard Icon", AVATAR_ICONS, key="settings_avatar_icon",
+            format_func=lambda k: f":material/{k}:", selection_mode="single",
+            label_visibility="collapsed",
+        )
+        st.markdown("**Icon Primary Color**")
+        st.caption("The circle's fill (darker).")
+        with st.container(key="settings_avatar_primary"):
+            st.pills(
+                "Icon Primary Color", list(AVATAR_PRIMARY), key="settings_avatar_primary_pick",
+                format_func=lambda k: AVATAR_PRIMARY[k][1], selection_mode="single",
+                label_visibility="collapsed", default=st.session_state["settings_avatar_primary"],
+            )
+        st.markdown("**Icon Secondary Color**")
+        st.caption("The icon and the circle's outline (lighter).")
+        with st.container(key="settings_avatar_secondary"):
+            st.pills(
+                "Icon Secondary Color", list(AVATAR_SECONDARY), key="settings_avatar_secondary_pick",
+                format_func=lambda k: AVATAR_SECONDARY[k][1], selection_mode="single",
+                label_visibility="collapsed", default=st.session_state["settings_avatar_secondary"],
+            )
+
         with st.container(key="settings_save_row"):
             _save_clicked = st.button("Save Settings", type="primary")
         if _save_clicked:
@@ -2770,6 +2907,11 @@ if st.session_state["current_page"] == "Settings":
                 st.session_state["settings_daily_target"],
                 st.session_state["settings_dark_mode"] == "Yes",
                 st.session_state["settings_handedness"],
+                st.session_state["settings_avatar_icon"],
+                # A deselected color pill reads back as None - fall back
+                # to the default rather than storing "no color".
+                st.session_state["settings_avatar_primary_pick"] or DEFAULT_AVATAR_PRIMARY,
+                st.session_state["settings_avatar_secondary_pick"] or DEFAULT_AVATAR_SECONDARY,
             )
             st.toast("Settings saved.", icon="✅")
             # Dark Mode/Handedness's own effect is the CSS built at the
