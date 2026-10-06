@@ -1231,18 +1231,20 @@ st.markdown(
     [data-testid="stExpander"] summary:focus-visible {{
         background-color: {PAL['accent_tint']} !important;
     }}
-    /* Settings form: centered and narrower than the full page width,
-       with a real gutter on BOTH sides - not just whichever side the
-       floating Menu button (Settings' own Handedness toggle) happens
-       to sit on, so the form looks identical either way. 200px total
-       (100px/side) comfortably clears the button's own footprint
-       (56px wide + 20px offset from the edge = 76px) with margin to
-       spare, on any viewport down to a narrow phone; 480px caps it at
-       a normal reading width on desktop rather than stretching
-       edge-to-edge on a wide window. */
+    /* Settings form: as wide as the page allows, flush to the edge
+       OPPOSITE the floating Menu button, with a 100px gutter on the
+       Menu button's side (NAV_SIDE, same Handedness-driven variable the
+       button/drawer use) - right-handed (button bottom-right): the form
+       starts at the page's left edge and leaves a gutter on the right;
+       left-handed: flush to the right edge, gutter on the left. 100px
+       comfortably clears the button's own footprint (56px wide + 20px
+       offset from the edge = 76px) while scrolling. Was centered and
+       capped at 480px with a gutter on BOTH sides, which wasted space
+       on the side the button isn't on (app_ideas #30 follow-up, per
+       user request). */
     .st-key-settings_form {{
-        width: min(480px, calc(100% - 200px));
-        margin: 0 auto;
+        width: calc(100% - 100px);
+        margin: {"0 auto 0 0" if NAV_SIDE == "right" else "0 0 0 auto"};
     }}
     /* Save Settings: centered under the form instead of left-aligned
        (Streamlit's own button default) - on a left-handed layout that
@@ -2809,14 +2811,15 @@ if st.session_state["current_page"] == "Settings":
         "settings_avatar_secondary", _settings["avatar_secondary"] or DEFAULT_AVATAR_SECONDARY
     )
 
-    # Centered and narrower than a full-width form (see
-    # .st-key-settings_form CSS) - per user request: on a left-handed
-    # layout, the floating Menu button sits bottom-left, exactly where
-    # an edge-to-edge form's own left edge (and the Save button, left-
-    # aligned by default) used to land, and could obstruct/overlap it
-    # while scrolling. A real gutter on BOTH sides, wide enough to
-    # clear the FAB on either side, means Settings looks the same
-    # regardless of which Handedness is picked.
+    # Wide, flush to the side away from the floating Menu button, with a
+    # gutter on the button's side so it never overlaps the form while
+    # scrolling (see .st-key-settings_form CSS) - the form follows
+    # Handedness. Split into two tabs, Profile (how you appear to
+    # others: alias + leaderboard avatar) and Preferences (how the app
+    # behaves for you), under ONE Save Settings button below both. Plain
+    # st.tabs (not the lazy on_change="rerun" kind): every tab's widgets
+    # have to keep running so Save can read all of them whichever tab is
+    # showing.
     with st.container(key="settings_form"):
         # Every field reads Title -> description -> input, in that
         # order (per user request - the description used to sit BELOW
@@ -2827,126 +2830,130 @@ if st.session_state["current_page"] == "Settings":
         # label hidden (label_visibility="collapsed", not removed
         # entirely - still there for screen readers) rather than
         # relying on the widget to draw it.
-        st.text_input(
-            "Alias", key="settings_alias", max_chars=10,
-            help="A short display name, 10 characters max.",
-        )
-        # Every plain Yes/No (or Right/Left) choice is a horizontal
-        # st.radio, not a selectbox - per user request, both options
-        # visible at once instead of a dropdown that takes a click to
-        # even see them.
-        st.markdown("**Auto-Add Community Words**")
-        st.caption("Automatically add new words other users add to your own list.")
-        st.radio(
-            "Auto-Add Community Words", ["No", "Yes"], key="settings_auto_add",
-            horizontal=True, label_visibility="collapsed",
-        )
-        st.markdown("**Share My Progress**")
-        st.caption("Let other users see your accuracy and streak.")
-        st.radio(
-            "Share My Progress", ["No", "Yes"], key="settings_share_progress",
-            horizontal=True, label_visibility="collapsed",
-        )
-        st.markdown("**Daily Word Target**")
-        st.caption("How many words a day counts toward your Progress tab streak.")
-        st.number_input(
-            "Daily Word Target", key="settings_daily_target", min_value=1, max_value=100, step=1,
-            label_visibility="collapsed",
-        )
-        st.markdown("**Dark Mode**")
-        st.caption("Switch the whole app to a dark color scheme.")
-        st.radio(
-            "Dark Mode", ["No", "Yes"], key="settings_dark_mode",
-            horizontal=True, label_visibility="collapsed",
-        )
-        st.markdown("**Handedness**")
-        st.caption("Which side the floating Menu button and drawer sit on.")
-        st.radio(
-            "Handedness", ["Right", "Left"], key="settings_handedness",
-            horizontal=True, label_visibility="collapsed",
-        )
-
-        # Leaderboard avatar (app_ideas #30) - pick a glyph, a darker
-        # primary (circle fill), and a lighter secondary (ring + glyph).
-        # Each is an st.popover opening a menu (a real dropdown can't show
-        # icons or lay them out in columns): colors are a single column,
-        # icons a 3-column grid. Picking one closes the menu by bumping
-        # the popover's key (same remount trick as the clickable words -
-        # a popover otherwise stays open across the rerun).
-        st.session_state.setdefault("avatar_pop_version", 0)
-        _pv = st.session_state["avatar_pop_version"]
-
-        def _pick_avatar(field, value):
-            st.session_state[f"settings_avatar_{field}"] = value
-            st.session_state["avatar_pop_version"] += 1
-
-        _sel_icon = st.session_state["settings_avatar_icon"]
-        _sel_primary = st.session_state["settings_avatar_primary"]
-        _sel_secondary = st.session_state["settings_avatar_secondary"]
-        # The trigger buttons' own swatch dots (the menu rows get theirs
-        # from the static CSS) - depends on the CURRENT pick, so it's
-        # emitted here, after the picks are known, not in the big
-        # stylesheet at the top of the script.
-        st.html(
-            "<style>"
-            + "".join(
-                f".st-key-settings_avatar_{f}_trigger [data-testid=\"stPopoverButton\"] p::before {{"
-                f" content:''; display:inline-block; width:11px; height:11px; border-radius:50%;"
-                f" background:{pal[sel][0]}; margin-right:8px; vertical-align:-1px;"
-                f" box-shadow: 0 0 0 1px rgba(128,128,128,0.45); }}"
-                for f, pal, sel in (
-                    ("primary", AVATAR_PRIMARY, _sel_primary),
-                    ("secondary", AVATAR_SECONDARY, _sel_secondary),
-                )
+        tab_profile, tab_prefs = st.tabs(["Profile", "Preferences"])
+        with tab_profile:
+            st.text_input(
+                "Alias", key="settings_alias", max_chars=10,
+                help="A short display name, 10 characters max.",
             )
-            + "</style>"
-        )
+            # Leaderboard avatar (app_ideas #30) - pick a glyph, a darker
+            # primary (circle fill), and a lighter secondary (ring + glyph).
+            # Each is an st.popover opening a menu (a real dropdown can't show
+            # icons or lay them out in columns): colors are a single column,
+            # icons a 3-column grid. Picking one closes the menu by bumping
+            # the popover's key (same remount trick as the clickable words -
+            # a popover otherwise stays open across the rerun).
+            st.session_state.setdefault("avatar_pop_version", 0)
+            _pv = st.session_state["avatar_pop_version"]
 
-        with st.container(key="settings_avatar_pickers"):
-            st.markdown("**Leaderboard Icon**")
-            st.caption("Shown on the Social tab in place of your initial.")
-            with st.popover(
-                _sel_icon.replace("_", " ").title() if _sel_icon else "Use my initial",
-                icon=f":material/{_sel_icon}:" if _sel_icon else None,
-                key=f"settings_avatar_icon_pop_{_pv}",
-            ):
-                st.button(
-                    "Use my initial", key="avatar_icon_none", on_click=_pick_avatar, args=("icon", None),
-                    type="primary" if not _sel_icon else "secondary", use_container_width=True,
+            def _pick_avatar(field, value):
+                st.session_state[f"settings_avatar_{field}"] = value
+                st.session_state["avatar_pop_version"] += 1
+
+            _sel_icon = st.session_state["settings_avatar_icon"]
+            _sel_primary = st.session_state["settings_avatar_primary"]
+            _sel_secondary = st.session_state["settings_avatar_secondary"]
+            # The trigger buttons' own swatch dots (the menu rows get theirs
+            # from the static CSS) - depends on the CURRENT pick, so it's
+            # emitted here, after the picks are known, not in the big
+            # stylesheet at the top of the script.
+            st.html(
+                "<style>"
+                + "".join(
+                    f".st-key-settings_avatar_{f}_trigger [data-testid=\"stPopoverButton\"] p::before {{"
+                    f" content:''; display:inline-block; width:11px; height:11px; border-radius:50%;"
+                    f" background:{pal[sel][0]}; margin-right:8px; vertical-align:-1px;"
+                    f" box-shadow: 0 0 0 1px rgba(128,128,128,0.45); }}"
+                    for f, pal, sel in (
+                        ("primary", AVATAR_PRIMARY, _sel_primary),
+                        ("secondary", AVATAR_SECONDARY, _sel_secondary),
+                    )
                 )
-                with st.container(key="settings_avatar_icon_grid"):
-                    for _row_start in range(0, len(AVATAR_ICONS), 3):
-                        for _col, _icon in zip(st.columns(3), AVATAR_ICONS[_row_start:_row_start + 3]):
-                            with _col:
+                + "</style>"
+            )
+
+            with st.container(key="settings_avatar_pickers"):
+                st.markdown("**Leaderboard Icon**")
+                st.caption("Shown on the Social tab in place of your initial.")
+                with st.popover(
+                    _sel_icon.replace("_", " ").title() if _sel_icon else "Use my initial",
+                    icon=f":material/{_sel_icon}:" if _sel_icon else None,
+                    key=f"settings_avatar_icon_pop_{_pv}",
+                ):
+                    st.button(
+                        "Use my initial", key="avatar_icon_none", on_click=_pick_avatar, args=("icon", None),
+                        type="primary" if not _sel_icon else "secondary", use_container_width=True,
+                    )
+                    with st.container(key="settings_avatar_icon_grid"):
+                        for _row_start in range(0, len(AVATAR_ICONS), 3):
+                            for _col, _icon in zip(st.columns(3), AVATAR_ICONS[_row_start:_row_start + 3]):
+                                with _col:
+                                    st.button(
+                                        f":material/{_icon}:", key=f"avatar_icon_{_icon}",
+                                        help=_icon.replace("_", " ").title(),
+                                        on_click=_pick_avatar, args=("icon", _icon),
+                                        type="primary" if _icon == _sel_icon else "secondary",
+                                        use_container_width=True,
+                                    )
+
+                st.markdown("**Icon Primary Color**")
+                st.caption("The circle's fill (darker).")
+                with st.container(key="settings_avatar_primary_trigger"):
+                    with st.popover(AVATAR_PRIMARY[_sel_primary][1], key=f"settings_avatar_primary_pop_{_pv}"):
+                        with st.container(key="settings_avatar_primary_list"):
+                            for _k, (_hex, _name) in AVATAR_PRIMARY.items():
                                 st.button(
-                                    f":material/{_icon}:", key=f"avatar_icon_{_icon}",
-                                    help=_icon.replace("_", " ").title(),
-                                    on_click=_pick_avatar, args=("icon", _icon),
-                                    type="primary" if _icon == _sel_icon else "secondary",
-                                    use_container_width=True,
+                                    _name, key=f"avatar_primary_{_k}", on_click=_pick_avatar, args=("primary", _k),
+                                    type="primary" if _k == _sel_primary else "secondary", use_container_width=True,
                                 )
 
-            st.markdown("**Icon Primary Color**")
-            st.caption("The circle's fill (darker).")
-            with st.container(key="settings_avatar_primary_trigger"):
-                with st.popover(AVATAR_PRIMARY[_sel_primary][1], key=f"settings_avatar_primary_pop_{_pv}"):
-                    with st.container(key="settings_avatar_primary_list"):
-                        for _k, (_hex, _name) in AVATAR_PRIMARY.items():
-                            st.button(
-                                _name, key=f"avatar_primary_{_k}", on_click=_pick_avatar, args=("primary", _k),
-                                type="primary" if _k == _sel_primary else "secondary", use_container_width=True,
-                            )
+                st.markdown("**Icon Secondary Color**")
+                st.caption("The icon and the circle's outline (lighter).")
+                with st.container(key="settings_avatar_secondary_trigger"):
+                    with st.popover(AVATAR_SECONDARY[_sel_secondary][1], key=f"settings_avatar_secondary_pop_{_pv}"):
+                        with st.container(key="settings_avatar_secondary_list"):
+                            for _k, (_hex, _name) in AVATAR_SECONDARY.items():
+                                st.button(
+                                    _name, key=f"avatar_secondary_{_k}", on_click=_pick_avatar, args=("secondary", _k),
+                                    type="primary" if _k == _sel_secondary else "secondary", use_container_width=True,
+                                )
 
-            st.markdown("**Icon Secondary Color**")
-            st.caption("The icon and the circle's outline (lighter).")
-            with st.container(key="settings_avatar_secondary_trigger"):
-                with st.popover(AVATAR_SECONDARY[_sel_secondary][1], key=f"settings_avatar_secondary_pop_{_pv}"):
-                    with st.container(key="settings_avatar_secondary_list"):
-                        for _k, (_hex, _name) in AVATAR_SECONDARY.items():
-                            st.button(
-                                _name, key=f"avatar_secondary_{_k}", on_click=_pick_avatar, args=("secondary", _k),
-                                type="primary" if _k == _sel_secondary else "secondary", use_container_width=True,
-                            )
+        with tab_prefs:
+            # Every plain Yes/No (or Right/Left) choice is a horizontal
+            # st.radio, not a selectbox - per user request, both options
+            # visible at once instead of a dropdown that takes a click to
+            # even see them.
+            st.markdown("**Auto-Add Community Words**")
+            st.caption("Automatically add new words other users add to your own list.")
+            st.radio(
+                "Auto-Add Community Words", ["No", "Yes"], key="settings_auto_add",
+                horizontal=True, label_visibility="collapsed",
+            )
+            st.markdown("**Share My Progress**")
+            st.caption("Let other users see your accuracy and streak.")
+            st.radio(
+                "Share My Progress", ["No", "Yes"], key="settings_share_progress",
+                horizontal=True, label_visibility="collapsed",
+            )
+            st.markdown("**Daily Word Target**")
+            st.caption("How many words a day counts toward your Progress tab streak.")
+            st.number_input(
+                "Daily Word Target", key="settings_daily_target", min_value=1, max_value=100, step=1,
+                label_visibility="collapsed",
+            )
+            st.markdown("**Dark Mode**")
+            st.caption("Switch the whole app to a dark color scheme.")
+            st.radio(
+                "Dark Mode", ["No", "Yes"], key="settings_dark_mode",
+                horizontal=True, label_visibility="collapsed",
+            )
+            st.markdown("**Handedness**")
+            st.caption("Which side the floating Menu button and drawer sit on.")
+            st.radio(
+                "Handedness", ["Right", "Left"], key="settings_handedness",
+                horizontal=True, label_visibility="collapsed",
+            )
+
 
         with st.container(key="settings_save_row"):
             _save_clicked = st.button("Save Settings", type="primary")
