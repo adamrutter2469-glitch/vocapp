@@ -862,7 +862,10 @@ def get_user_settings(user_id: str) -> dict:
     con.close()
     if row is None:
         return {
-            "alias": "", "auto_add_community_words": False, "share_progress": False,
+            # share_progress defaults ON for someone with no saved row
+            # (per user request) - matches initialize_new_user, which
+            # writes that same default as a real row on first login.
+            "alias": "", "auto_add_community_words": False, "share_progress": True,
             "daily_word_target": 10, "dark_mode": False, "handedness": "Right",
             "avatar_icon": None, "avatar_primary": None, "avatar_secondary": None,
         }
@@ -912,6 +915,72 @@ def save_user_settings(
     )
     con.close()
     r2_storage.upload_db()
+
+
+def is_new_user(user_id: str) -> bool:
+    """True if this user has never had a user_settings row - the marker
+    for "first login" (a row is written by initialize_new_user, or by
+    Settings' own Save, so every existing user has one). Cheap cached
+    read, safe to call every session."""
+    con = get_connection()
+    row = con.execute("SELECT 1 FROM user_settings WHERE user_id = ?", [user_id]).fetchone()
+    con.close()
+    return row is None
+
+
+def initialize_new_user(user_id: str) -> int:
+    """First-login setup for a user with no settings row yet; returns how
+    many words they were given (0 if they weren't actually new - e.g.
+    two sessions racing, or someone who got a row in the meantime).
+
+    - A user_settings row with the defaults, share_progress ON (per user
+      request - the Social tab only shows people who opted in, and a new
+      friend should appear without having to find that toggle).
+    - Their word list seeded with every word that's active on anyone
+      else's list, so Quiz Me/My Words aren't empty on day one. Each
+      gets a fresh schedule (due today) like any newly added word, but
+      keeps its ORIGINAL date_added (the earliest across the people who
+      have it), capped at 30 days ago - stamping them all "now" would
+      flood the Social tab's leaderboard ("words added this week") and
+      activity feed with fake "added" events, and even the original
+      dates would, for the handful someone else added in the last week
+      (confirmed in testing: 12 phantom adds on a copy of the real data).
+
+    Settings row first, in the same connection: its existence is the
+    "already initialized" check, so a second concurrent call that gets
+    here after the first finishes is a no-op."""
+    con = get_connection(fresh=True)
+    if con.execute("SELECT 1 FROM user_settings WHERE user_id = ?", [user_id]).fetchone():
+        con.close()
+        return 0
+    con.execute(
+        "INSERT INTO user_settings "
+        "(user_id, alias, auto_add_community_words, share_progress, daily_word_target, dark_mode, handedness) "
+        "VALUES (?, '', FALSE, TRUE, 10, FALSE, 'Right')",
+        [user_id],
+    )
+    con.execute(
+        """
+        INSERT INTO user_words (user_id, word, date_added, repetition, ease_factor, interval_days, next_review_date)
+        SELECT ?, word, LEAST(MIN(date_added), ?), 0, 2.5, 0, ?
+        FROM user_words
+        WHERE active AND user_id != ?
+        GROUP BY word
+        ON CONFLICT (user_id, word) DO NOTHING
+        """,
+        [
+            user_id,
+            # Naive UTC, matching how the TIMESTAMP column's own values
+            # come back - see _to_local_date's docstring.
+            (datetime.now(timezone.utc) - timedelta(days=30)).replace(tzinfo=None),
+            _today_local(),
+            user_id,
+        ],
+    )
+    seeded = con.execute("SELECT COUNT(*) FROM user_words WHERE user_id = ?", [user_id]).fetchone()[0]
+    con.close()
+    r2_storage.upload_db()
+    return seeded
 
 
 def add_app_idea(user_id: str, idea_text: str, idea_type: str = "Improvement") -> int:

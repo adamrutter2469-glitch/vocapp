@@ -1295,6 +1295,17 @@ st.markdown(
 # session.
 st.session_state["user_id"] = auth.require_login()
 
+# First login for a newly invited friend: give them the default settings
+# (Share My Progress ON) and the words already in the app, so nothing
+# is empty on day one - see db.initialize_new_user. Checked once per
+# browser session (the flag), via a cheap cached read; the real work
+# only happens for someone with no settings row yet.
+if not st.session_state.get("new_user_checked"):
+    if db.is_new_user(st.session_state["user_id"]):
+        with st.spinner("Setting up your account..."):
+            db.initialize_new_user(st.session_state["user_id"])
+    st.session_state["new_user_checked"] = True
+
 
 def _uid() -> str:
     """This session's signed-in user's email - the id every db.py call
