@@ -29,6 +29,7 @@ import streamlit as st
 ALLOWED_EMAILS = {
     "adamrutter2469@gmail.com",
     "riley.kaitlyn96@gmail.com",
+    "bartelmealex@gmail.com",
 }
 
 
