@@ -453,8 +453,20 @@ st.markdown(
        since they're flex-sized off this container's own width, so
        their 1:11 proportion (checkbox : expander) is unaffected. */
     [class*="st-key-word_row_"] {{
-        max-width: 80%;
-        margin: 0 auto;
+        width: min(80%, calc(100% - 100px));
+        margin: {"0 auto 0 0" if NAV_SIDE == "right" else "0 0 0 auto"};
+    }}
+    /* Same treatment as Settings' form (see .st-key-settings_form):
+       instead of centering the tiles, they sit flush to the edge
+       OPPOSITE the floating Menu button (NAV_SIDE - right-handed:
+       left edge; left-handed: right edge), with room left on the
+       button's side so it never overlaps a tile while scrolling. The
+       80% cap above is unchanged on a wide screen; calc(100% - 100px)
+       only takes over on a narrow one, where 20% of the width is less
+       than the button's own ~76px footprint (56px + 20px offset). The
+       toolbar row above the list follows the same side. */
+    .st-key-words_toolbar_row [data-testid="stHorizontalBlock"] {{
+        justify-content: {"flex-start" if NAV_SIDE == "right" else "flex-end"};
     }}
     /* Checkbox + expander staying on ONE line, even on a phone-width
        viewport (app_ideas #21 - "checkbox by word and word dropdown on
