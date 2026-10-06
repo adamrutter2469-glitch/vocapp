@@ -34,7 +34,13 @@ AUDIO_BASE_URL = "https://media.merriam-webster.com/audio/prons/en/us/mp3"
 
 
 class LookupNotFound(Exception):
-    pass
+    """No exact entry for the word. `suggestions` is MW's own "did you
+    mean" list (app_ideas #31) - possibly empty, never None - so a
+    caller can offer them instead of just a dead-end error."""
+
+    def __init__(self, message: str, suggestions: list[str] | None = None):
+        super().__init__(message)
+        self.suggestions = suggestions or []
 
 
 def _get_keys() -> tuple[str, str]:
@@ -60,6 +66,33 @@ def _matching_entries(data: list, word: str) -> list[dict]:
         e for e in data
         if isinstance(e, dict) and e.get("meta", {}).get("id", "").split(":")[0].lower() == w
     ]
+
+
+def _suggestions(data: list, word: str, limit: int = 6) -> list[str]:
+    """What to offer when `word` has no exact entry (app_ideas #31). MW
+    answers an unknown word with a flat list of plain suggestion strings
+    (its own spelling-correction ranking, best first - kept in that
+    order); when the response is real entries instead, none of them
+    this exact word (e.g. a phrase entry), their headwords stand in.
+    Deduped case-insensitively, the typed word itself dropped, capped at
+    `limit`. Multi-word suggestions ("ad hominem") are kept - they're
+    valid lookups."""
+    typed = word.strip().lower()
+    candidates = []
+    for item in data:
+        if isinstance(item, str):
+            candidates.append(item)
+        elif isinstance(item, dict):
+            headword = item.get("meta", {}).get("id", "").split(":")[0]
+            if headword:
+                candidates.append(headword)
+    seen, out = {typed}, []
+    for c in candidates:
+        key = c.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(c.strip())
+    return out[:limit]
 
 
 def _find_runon(data: list, word: str) -> tuple[dict, dict] | None:
@@ -249,7 +282,7 @@ def lookup_word(word: str) -> dict:
     resp.raise_for_status()
     data = resp.json()
     if not data or isinstance(data[0], str):
-        raise LookupNotFound(f"No dictionary entry found for '{word}'.")
+        raise LookupNotFound(f"No dictionary entry found for '{word}'.", _suggestions(data, word))
 
     entries = _matching_entries(data, word)
     if entries:
@@ -269,7 +302,7 @@ def lookup_word(word: str) -> dict:
     else:
         runon_match = _find_runon(data, word)
         if not runon_match:
-            raise LookupNotFound(f"No dictionary entry found for '{word}'.")
+            raise LookupNotFound(f"No dictionary entry found for '{word}'.", _suggestions(data, word))
         # Run-on form: definition/example come from the base entry (a
         # run-on has no definition of its own), but part of speech,
         # pronunciation, AND spelling are the run-on's own where MW

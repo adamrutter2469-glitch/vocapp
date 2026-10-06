@@ -274,6 +274,19 @@ st.markdown(
         width: 300px !important;
     }}
 
+    /* "Did you mean" chips (app_ideas #31) - one wrapping row of
+       shrink-wrapped buttons rather than the default one-button-per-line
+       stack, so up to 6 short words fit in a line or two, phone width
+       included. */
+    .st-key-addword_suggestion_chips {{
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }}
+    .st-key-addword_suggestion_chips [data-testid="stElementContainer"] {{
+        width: auto;
+    }}
+
     /* Advanced tab's Peak usage / Lowest usage / trend-note row: two
        small stat cards shrink-wrapped to their own content, with the
        trend note (longer, variable-length sentence) filling whatever
@@ -1201,6 +1214,8 @@ def _toggle_nav():
 
 def _select_page(page):
     st.session_state["current_page"] = page
+    # Stale "did you mean" chips shouldn't greet you on a later visit.
+    st.session_state["addword_suggestions"] = []
     st.session_state["nav_open"] = False
 
 
@@ -1471,6 +1486,10 @@ st.session_state.setdefault("addword_looked_up_word", "")
 # whether the click resulted in success or a "already in your list"
 # warning either way.
 st.session_state.setdefault("popover_version", 0)
+# "Did you mean" words from the last failed lookup (app_ideas #31) - see
+# _run_lookup/_do_add; rendered as tappable chips under Add Word's
+# toolbar, cleared by any successful lookup/add or leaving the page.
+st.session_state.setdefault("addword_suggestions", [])
 
 
 def _word_key():
@@ -1518,9 +1537,11 @@ def _run_lookup(word):
         # reads as "did my click even do anything?" more than as
         # "you're now looking at a different word."
         st.session_state["addword_subtab"] = "Definition"
-    except dictionary.LookupNotFound:
+        st.session_state["addword_suggestions"] = []
+    except dictionary.LookupNotFound as e:
         st.session_state["addword_result"] = None
         st.session_state["addword_looked_up_word"] = ""
+        st.session_state["addword_suggestions"] = e.suggestions
         _set_msg("warning", f"No dictionary entry found for '{word}'.")
     except requests.RequestException:
         st.session_state["addword_result"] = None
@@ -1541,6 +1562,7 @@ def _reset_form_after_add(clear_search=True):
         st.session_state["form_version"] += 1  # next render uses a fresh, empty Word field
         st.session_state["addword_result"] = None
         st.session_state["addword_looked_up_word"] = ""
+        st.session_state["addword_suggestions"] = []
     # Only force Quiz Me to re-pick if it doesn't already have a word in
     # play - the deck being empty, or "all caught up" with nothing due,
     # are the cases this word could actually change. If a quiz is
@@ -1604,7 +1626,8 @@ def _do_add():
         return
     try:
         info = dictionary.lookup_word(word)
-    except dictionary.LookupNotFound:
+    except dictionary.LookupNotFound as e:
+        st.session_state["addword_suggestions"] = e.suggestions
         _set_msg("error", f"'{word}' isn't in the dictionary - check the spelling.")
         return
     except requests.RequestException:
@@ -1904,6 +1927,22 @@ if st.session_state["current_page"] == "Add Word":
             st.button("Look Up", key="lookup_btn", on_click=_do_lookup, help="Look up in the dictionary")
         with c_add:
             st.button("Add Word", key="add_btn", on_click=_do_add, help="Add to My Words")
+
+    # "Did you mean" chips after a lookup/add on a word MW doesn't have
+    # (app_ideas #31) - MW's own suggestions, best first. Tapping one
+    # fills the Word field and runs the lookup via the same
+    # _do_lookup_word clickable words use, so it lands on that word's
+    # Definition tab like any other lookup.
+    suggestions = st.session_state.get("addword_suggestions") or []
+    if suggestions:
+        with st.container(key="addword_suggestions_box"):
+            st.caption("Not in the dictionary - did you mean:")
+            with st.container(key="addword_suggestion_chips"):
+                for i, suggestion in enumerate(suggestions):
+                    st.button(
+                        suggestion, key=f"addword_suggest_{i}_{suggestion}",
+                        on_click=_do_lookup_word, args=(suggestion,),
+                    )
 
     result = st.session_state.get("addword_result")
     if result:
