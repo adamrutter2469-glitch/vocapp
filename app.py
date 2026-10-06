@@ -116,16 +116,17 @@ DEFAULT_AVATAR_PRIMARY = "navy"
 DEFAULT_AVATAR_SECONDARY = "sky"
 
 
-def _avatar_pill_color_css(widget_key: str, palette: dict) -> str:
-    """A small colored dot before each option of an st.pills color
-    picker (Settings) - pills have no per-option color of their own, so
-    this paints one by position (nth-child), in the same order as
-    `palette`. Built here and interpolated into the big stylesheet
-    below rather than hand-writing 16 near-identical rules."""
+def _avatar_list_dot_css(list_key: str, palette: dict) -> str:
+    """A swatch dot before each color name in a Settings color menu (a
+    single-column list of buttons inside an st.popover) - buttons have no
+    per-option color of their own, so this paints one by position
+    (nth-child), in the same order as `palette`. Built here and
+    interpolated into the stylesheet below instead of hand-writing 16
+    near-identical rules."""
     return "".join(
-        f".st-key-{widget_key} [data-testid=\"stButtonGroup\"] button:nth-child({i}) p::before {{"
+        f".st-key-{list_key} [data-testid=\"stElementContainer\"]:nth-child({i}) button p::before {{"
         f" content:''; display:inline-block; width:11px; height:11px; border-radius:50%;"
-        f" background:{hex_}; margin-right:7px; vertical-align:-1px;"
+        f" background:{hex_}; margin-right:8px; vertical-align:-1px;"
         f" box-shadow: 0 0 0 1px rgba(128,128,128,0.45); }}\n"
         for i, (hex_, _name) in enumerate(palette.values(), start=1)
     )
@@ -918,29 +919,26 @@ st.markdown(
         text-transform: none;
         font-variation-settings: 'FILL' 1;
     }}
-    /* st.pills (Settings' icon/color pickers) ship hardcoded light-theme
-       colors - confirmed live: bright white buttons with navy text on
-       the dark page. Same "real text lives one level deeper" pattern as
-       elsewhere, so the label <p>/icon <span> inside are set too, not
-       just the button. */
-    button[data-variant="pills"] {{
-        background-color: {PAL['surface']} !important;
-        border-color: {PAL['border_18']} !important;
+    /* Settings' avatar pickers (app_ideas #30) - each is an st.popover
+       "dropdown": the color menus are one column of buttons with a
+       swatch dot each; the icon menu is a 3-column grid. The trigger
+       buttons stretch to the form's width like the other inputs. */
+    {_avatar_list_dot_css("settings_avatar_primary_list", AVATAR_PRIMARY)}
+    {_avatar_list_dot_css("settings_avatar_secondary_list", AVATAR_SECONDARY)}
+    .st-key-settings_avatar_pickers [data-testid="stPopoverButton"] {{
+        width: 100%;
+        justify-content: flex-start;
     }}
-    button[data-variant="pills"], button[data-variant="pills"] p, button[data-variant="pills"] span {{
-        color: {PAL['text']} !important;
+    .st-key-settings_avatar_icon_grid [data-testid="stHorizontalBlock"] {{
+        gap: 0.4rem;
+        flex-wrap: nowrap;
     }}
-    button[data-variant="pills"][data-selected="true"] {{
-        background-color: {PAL['accent_tint']} !important;
-        border-color: {PAL['accent']} !important;
+    .st-key-settings_avatar_icon_grid [data-testid="stColumn"] {{
+        min-width: 0;
     }}
-    button[data-variant="pills"][data-selected="true"], button[data-variant="pills"][data-selected="true"] p,
-    button[data-variant="pills"][data-selected="true"] span {{
-        color: {PAL['accent_light'] if _DARK else PAL['accent']} !important;
+    .st-key-settings_avatar_primary_list button, .st-key-settings_avatar_secondary_list button {{
+        justify-content: flex-start;
     }}
-    /* Settings' color pickers: a swatch dot per option */
-    {_avatar_pill_color_css("settings_avatar_primary", AVATAR_PRIMARY)}
-    {_avatar_pill_color_css("settings_avatar_secondary", AVATAR_SECONDARY)}
     .social-who {{
         flex: 1 1 auto;
         min-width: 50px;
@@ -2870,31 +2868,85 @@ if st.session_state["current_page"] == "Settings":
 
         # Leaderboard avatar (app_ideas #30) - pick a glyph, a darker
         # primary (circle fill), and a lighter secondary (ring + glyph).
-        # pills, not a dropdown, so every option shows at once; deselecting
-        # the icon goes back to the plain letter-in-a-circle.
-        st.markdown("**Leaderboard Icon**")
-        st.caption("Shown on the Social tab. Tap the selected one again to go back to your initial.")
-        st.pills(
-            "Leaderboard Icon", AVATAR_ICONS, key="settings_avatar_icon",
-            format_func=lambda k: f":material/{k}:", selection_mode="single",
-            label_visibility="collapsed",
+        # Each is an st.popover opening a menu (a real dropdown can't show
+        # icons or lay them out in columns): colors are a single column,
+        # icons a 3-column grid. Picking one closes the menu by bumping
+        # the popover's key (same remount trick as the clickable words -
+        # a popover otherwise stays open across the rerun).
+        st.session_state.setdefault("avatar_pop_version", 0)
+        _pv = st.session_state["avatar_pop_version"]
+
+        def _pick_avatar(field, value):
+            st.session_state[f"settings_avatar_{field}"] = value
+            st.session_state["avatar_pop_version"] += 1
+
+        _sel_icon = st.session_state["settings_avatar_icon"]
+        _sel_primary = st.session_state["settings_avatar_primary"]
+        _sel_secondary = st.session_state["settings_avatar_secondary"]
+        # The trigger buttons' own swatch dots (the menu rows get theirs
+        # from the static CSS) - depends on the CURRENT pick, so it's
+        # emitted here, after the picks are known, not in the big
+        # stylesheet at the top of the script.
+        st.html(
+            "<style>"
+            + "".join(
+                f".st-key-settings_avatar_{f}_trigger [data-testid=\"stPopoverButton\"] p::before {{"
+                f" content:''; display:inline-block; width:11px; height:11px; border-radius:50%;"
+                f" background:{pal[sel][0]}; margin-right:8px; vertical-align:-1px;"
+                f" box-shadow: 0 0 0 1px rgba(128,128,128,0.45); }}"
+                for f, pal, sel in (
+                    ("primary", AVATAR_PRIMARY, _sel_primary),
+                    ("secondary", AVATAR_SECONDARY, _sel_secondary),
+                )
+            )
+            + "</style>"
         )
-        st.markdown("**Icon Primary Color**")
-        st.caption("The circle's fill (darker).")
-        with st.container(key="settings_avatar_primary"):
-            st.pills(
-                "Icon Primary Color", list(AVATAR_PRIMARY), key="settings_avatar_primary_pick",
-                format_func=lambda k: AVATAR_PRIMARY[k][1], selection_mode="single",
-                label_visibility="collapsed", default=st.session_state["settings_avatar_primary"],
-            )
-        st.markdown("**Icon Secondary Color**")
-        st.caption("The icon and the circle's outline (lighter).")
-        with st.container(key="settings_avatar_secondary"):
-            st.pills(
-                "Icon Secondary Color", list(AVATAR_SECONDARY), key="settings_avatar_secondary_pick",
-                format_func=lambda k: AVATAR_SECONDARY[k][1], selection_mode="single",
-                label_visibility="collapsed", default=st.session_state["settings_avatar_secondary"],
-            )
+
+        with st.container(key="settings_avatar_pickers"):
+            st.markdown("**Leaderboard Icon**")
+            st.caption("Shown on the Social tab in place of your initial.")
+            with st.popover(
+                _sel_icon.replace("_", " ").title() if _sel_icon else "Use my initial",
+                icon=f":material/{_sel_icon}:" if _sel_icon else None,
+                key=f"settings_avatar_icon_pop_{_pv}",
+            ):
+                st.button(
+                    "Use my initial", key="avatar_icon_none", on_click=_pick_avatar, args=("icon", None),
+                    type="primary" if not _sel_icon else "secondary", use_container_width=True,
+                )
+                with st.container(key="settings_avatar_icon_grid"):
+                    for _row_start in range(0, len(AVATAR_ICONS), 3):
+                        for _col, _icon in zip(st.columns(3), AVATAR_ICONS[_row_start:_row_start + 3]):
+                            with _col:
+                                st.button(
+                                    f":material/{_icon}:", key=f"avatar_icon_{_icon}",
+                                    help=_icon.replace("_", " ").title(),
+                                    on_click=_pick_avatar, args=("icon", _icon),
+                                    type="primary" if _icon == _sel_icon else "secondary",
+                                    use_container_width=True,
+                                )
+
+            st.markdown("**Icon Primary Color**")
+            st.caption("The circle's fill (darker).")
+            with st.container(key="settings_avatar_primary_trigger"):
+                with st.popover(AVATAR_PRIMARY[_sel_primary][1], key=f"settings_avatar_primary_pop_{_pv}"):
+                    with st.container(key="settings_avatar_primary_list"):
+                        for _k, (_hex, _name) in AVATAR_PRIMARY.items():
+                            st.button(
+                                _name, key=f"avatar_primary_{_k}", on_click=_pick_avatar, args=("primary", _k),
+                                type="primary" if _k == _sel_primary else "secondary", use_container_width=True,
+                            )
+
+            st.markdown("**Icon Secondary Color**")
+            st.caption("The icon and the circle's outline (lighter).")
+            with st.container(key="settings_avatar_secondary_trigger"):
+                with st.popover(AVATAR_SECONDARY[_sel_secondary][1], key=f"settings_avatar_secondary_pop_{_pv}"):
+                    with st.container(key="settings_avatar_secondary_list"):
+                        for _k, (_hex, _name) in AVATAR_SECONDARY.items():
+                            st.button(
+                                _name, key=f"avatar_secondary_{_k}", on_click=_pick_avatar, args=("secondary", _k),
+                                type="primary" if _k == _sel_secondary else "secondary", use_container_width=True,
+                            )
 
         with st.container(key="settings_save_row"):
             _save_clicked = st.button("Save Settings", type="primary")
@@ -2908,10 +2960,10 @@ if st.session_state["current_page"] == "Settings":
                 st.session_state["settings_dark_mode"] == "Yes",
                 st.session_state["settings_handedness"],
                 st.session_state["settings_avatar_icon"],
-                # A deselected color pill reads back as None - fall back
-                # to the default rather than storing "no color".
-                st.session_state["settings_avatar_primary_pick"] or DEFAULT_AVATAR_PRIMARY,
-                st.session_state["settings_avatar_secondary_pick"] or DEFAULT_AVATAR_SECONDARY,
+                # (Always set - the menus can't deselect a color - but
+                # fall back anyway rather than ever storing "no color".)
+                st.session_state["settings_avatar_primary"] or DEFAULT_AVATAR_PRIMARY,
+                st.session_state["settings_avatar_secondary"] or DEFAULT_AVATAR_SECONDARY,
             )
             st.toast("Settings saved.", icon="✅")
             # Dark Mode/Handedness's own effect is the CSS built at the
