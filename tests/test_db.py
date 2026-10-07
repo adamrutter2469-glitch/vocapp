@@ -82,6 +82,19 @@ def test_aware_and_naive_datetimes_both_store_as_utc(db):
     assert abs((stored - now.replace(tzinfo=None)).total_seconds()) < 1
 
 
+def test_multi_statement_write_is_atomic_and_reads_dont_hold_a_transaction(db):
+    _add(db, U1, "alpha")
+    con = db.get_connection()
+    con.execute("SELECT 1")
+    assert con._in_tx is False                       # a read runs bare
+    con.execute("DELETE FROM quiz_attempts WHERE user_id = ?", [U1])
+    assert con._in_tx is True                        # first write opens the transaction
+    con.execute("DELETE FROM user_words WHERE user_id = ?", [U1])
+    del con                                          # "caller raised before close()" -> rolled back
+    import gc; gc.collect()
+    assert db.get_word(U1, "alpha") is not None      # the delete never committed
+
+
 # ---------------- words / active ----------------
 
 def test_add_word_is_per_user_and_shares_content(db):

@@ -37,6 +37,20 @@ st.set_page_config(
 )
 
 
+def _early_settings():
+    """This viewer's saved settings, read ONCE per script run for the
+    handful of things that have to be known before anything renders
+    (Dark Mode, Handedness - see below). Each database call is a network
+    round trip now, so the two helpers share this one read instead of
+    making one each. None for someone not logged in."""
+    if not st.user.is_logged_in:
+        return None
+    return db.get_user_settings(st.user.email)
+
+
+_EARLY_SETTINGS = _early_settings()
+
+
 def _dark_mode_enabled() -> bool:
     """Whether to render the dark palette for this run. Has to work
     BEFORE auth.require_login() actually runs (the CSS block below is
@@ -46,9 +60,7 @@ def _dark_mode_enabled() -> bool:
     run yet, so it's safe to read here. Not logged in yet (or not
     invited) just means "light" - there's no per-user setting to read
     for someone auth.require_login() would stop anyway."""
-    if not st.user.is_logged_in:
-        return False
-    return db.get_user_settings(st.user.email)["dark_mode"]
+    return bool(_EARLY_SETTINGS and _EARLY_SETTINGS["dark_mode"])
 
 
 _DARK = _dark_mode_enabled()
@@ -153,9 +165,7 @@ def _left_handed_enabled() -> bool:
     instead of their default right - same early-read timing as
     _dark_mode_enabled above, same reason (the CSS positioning them is
     built before auth.require_login() runs)."""
-    if not st.user.is_logged_in:
-        return False
-    return db.get_user_settings(st.user.email)["handedness"] == "Left"
+    return bool(_EARLY_SETTINGS and _EARLY_SETTINGS["handedness"] == "Left")
 
 
 _LEFT_HANDED = _left_handed_enabled()

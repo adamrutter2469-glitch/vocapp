@@ -28,7 +28,9 @@ Schema (multi-user):
 """
 
 import os
+import sys
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
@@ -163,23 +165,40 @@ def _get_pool() -> ConnectionPool:
                 url,
                 min_size=1,
                 max_size=int(os.environ.get("DB_POOL_MAX", "8")),
+                # autocommit: a plain read is ONE network round trip (no
+                # BEGIN/COMMIT around it) - see _Conn for how writes get
+                # a real transaction anyway. Round trips are what cost
+                # time on a hosted database (~65ms each from a home
+                # connection), where a local file cost nothing.
                 # prepare_threshold=None: no server-side prepared
                 # statements - Neon's pooler (PgBouncer, transaction
                 # mode) hands each transaction a possibly-different
                 # backend connection, where a statement prepared on an
                 # earlier one doesn't exist.
-                kwargs={"prepare_threshold": None, "autocommit": False},
+                kwargs={"prepare_threshold": None, "autocommit": True},
                 configure=_configure,
-                # Neon suspends an idle database after a few minutes and
-                # drops its connections; validate one before handing it
-                # out so the first request after a quiet spell reconnects
-                # instead of failing on a dead socket.
-                check=ConnectionPool.check_connection,
+                # Neon suspends an idle database after ~5 minutes and
+                # drops its connections. Retiring ours well before that
+                # (max_idle) keeps a dead one from being handed out; the
+                # old per-checkout validity ping (check=) cost a whole
+                # extra round trip on EVERY call, so it's gone - the
+                # one-shot retry in _Conn.execute covers the rare stale
+                # connection that still slips through.
+                max_idle=180,
+                max_lifetime=1800,
                 open=False,
             )
             pool.open(wait=True, timeout=30)
             _pool = pool
     return _pool
+
+
+_READ_ONLY_PREFIXES = ("select", "show")
+
+# DB_TRACE=1 prints every statement and how long it took to stderr - for
+# counting how many round trips a page load makes (each costs real time
+# against a hosted database).
+_TRACE = bool(os.environ.get("DB_TRACE"))
 
 
 class _Conn:
@@ -190,10 +209,18 @@ class _Conn:
 
     - `?` placeholders are translated to psycopg's `%s` (and literal `%`
       escaped) in execute().
-    - Everything between get_connection() and close() is ONE transaction,
-      committed by close(): a multi-statement write (delete_word,
-      initialize_new_user) is now atomic, where DuckDB autocommitted each
-      statement separately.
+    - Reads (SELECT) run bare: one round trip, no transaction. The
+      FIRST statement that isn't a read opens a transaction (BEGIN) and
+      everything from there to close() is committed together - so a
+      multi-statement write (delete_word, add_word, initialize_new_user)
+      is atomic, where DuckDB autocommitted each statement separately.
+      (Reads that come BEFORE the first write in the same function, like
+      update_schedule's lookup of the current schedule, are outside that
+      transaction - fine at this app's scale: one session's own
+      word-schedule isn't contended.)
+    - If the connection turns out to be dead on its very first statement
+      (a stale pooled socket after the database was suspended), it's
+      swapped for a fresh one and the statement retried once.
     - If a caller raises before close(), __del__ rolls back and returns
       the connection to the pool rather than leaking it."""
 
@@ -201,6 +228,8 @@ class _Conn:
         self._pool = pool
         self._raw = raw
         self._cur = None
+        self._in_tx = False
+        self._ran_any = False
 
     @staticmethod
     def _translate(sql, params):
@@ -208,11 +237,51 @@ class _Conn:
             return sql
         return sql.replace("%", "%%").replace("?", "%s")
 
+    def begin(self):
+        if not self._in_tx:
+            self._raw.execute("BEGIN")
+            self._in_tx = True
+
+    def commit(self):
+        if self._in_tx:
+            self._raw.execute("COMMIT")
+            self._in_tx = False
+
     def execute(self, sql, params=None):
-        self._cur = self._raw.execute(self._translate(sql, params), params)
+        if not self._in_tx and not sql.lstrip()[:6].lower().startswith(_READ_ONLY_PREFIXES):
+            self._begin_with_retry()
+        translated = self._translate(sql, params)
+        _t0 = time.perf_counter() if _TRACE else 0.0
+        try:
+            self._cur = self._raw.execute(translated, params)
+        except psycopg.OperationalError:
+            if self._ran_any or self._in_tx:
+                raise
+            self._replace_connection()
+            self._cur = self._raw.execute(translated, params)
+        self._ran_any = True
+        if _TRACE:
+            print(f"[db {(time.perf_counter() - _t0) * 1000:5.0f}ms] {' '.join(sql.split())[:90]}",
+                  file=sys.stderr, flush=True)
         return self._cur
 
+    def _begin_with_retry(self):
+        try:
+            self.begin()
+        except psycopg.OperationalError:
+            if self._ran_any:
+                raise
+            self._replace_connection()
+            self.begin()
+
+    def _replace_connection(self):
+        old, self._raw = self._raw, None
+        self._in_tx = False
+        self._pool.putconn(old)        # broken connections are discarded by the pool
+        self._raw = self._pool.getconn()
+
     def executemany(self, sql, seq):
+        self.begin()
         with self._raw.cursor() as cur:
             cur.executemany(self._translate(sql, [None]), seq)
 
@@ -221,22 +290,29 @@ class _Conn:
         return self._cur.description if self._cur is not None else None
 
     def close(self):
-        raw, self._raw = self._raw, None
+        raw = self._raw
         if raw is None:
             return
         try:
-            raw.commit()
+            self.commit()
         except Exception:
-            raw.rollback()
+            try:
+                raw.execute("ROLLBACK")
+            except Exception:
+                pass
             raise
         finally:
+            self._raw = None
             self._pool.putconn(raw)
 
     def __del__(self):
         raw = getattr(self, "_raw", None)
         if raw is not None:
             try:
-                raw.rollback()
+                if getattr(self, "_in_tx", False):
+                    raw.execute("ROLLBACK")
+            except Exception:
+                pass
             finally:
                 self._pool.putconn(raw)
                 self._raw = None
@@ -276,86 +352,96 @@ def _ensure_schema(con):
         # the caller's: if that caller later raised before close(), the
         # rollback would silently undo the schema while _schema_ready
         # stayed True.
-        con._raw.commit()
+        con.commit()
         _schema_ready = True
 
 
+_SCHEMA_DDL = """
+    CREATE TABLE IF NOT EXISTS word_content (
+        word            TEXT PRIMARY KEY,
+        definition      TEXT NOT NULL,
+        part_of_speech  TEXT,
+        example         TEXT,
+        synonyms        TEXT,
+        phonetic        TEXT,
+        audio_url       TEXT,
+        antonyms        TEXT,
+        etymology       TEXT
+    );
+    -- active (app_ideas #18) - per user, per word, deliberately NOT on
+    -- word_content: deactivating a word for yourself has no effect on
+    -- anyone else who also has it in their own list. Defaults TRUE so
+    -- every word on every user's list - present and future - starts
+    -- (and stays, until someone actually deactivates it) active.
+    CREATE TABLE IF NOT EXISTS user_words (
+        user_id           TEXT NOT NULL,
+        word              TEXT NOT NULL REFERENCES word_content(word),
+        date_added        TIMESTAMP NOT NULL,
+        repetition        INTEGER DEFAULT 0,
+        ease_factor       DOUBLE PRECISION DEFAULT 2.5,
+        interval_days     INTEGER DEFAULT 0,
+        next_review_date  DATE DEFAULT CURRENT_DATE,
+        active            BOOLEAN DEFAULT TRUE,
+        PRIMARY KEY (user_id, word)
+    );
+    CREATE SEQUENCE IF NOT EXISTS attempt_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS quiz_attempts (
+        id            INTEGER PRIMARY KEY DEFAULT nextval('attempt_id_seq'),
+        user_id       TEXT NOT NULL,
+        word          TEXT NOT NULL REFERENCES word_content(word),
+        attempt_date  TIMESTAMP NOT NULL,
+        your_answer   TEXT NOT NULL,
+        accuracy      INTEGER NOT NULL,
+        got_right     TEXT,   -- newline-joined bullet points
+        got_missed    TEXT,   -- newline-joined bullet points
+        note          TEXT
+    );
+    -- Nearly every query filters quiz_attempts by user - cheap indexes
+    -- now that this is a real server (DuckDB scanned a local file and
+    -- didn't need them).
+    CREATE INDEX IF NOT EXISTS quiz_attempts_user_date_idx ON quiz_attempts (user_id, attempt_date);
+    CREATE INDEX IF NOT EXISTS quiz_attempts_user_word_idx ON quiz_attempts (user_id, word);
+    -- One row per user - the Settings page (see app.py). alias is capped
+    -- at 10 chars by the UI's max_chars, not enforced here too.
+    -- daily_word_target feeds the Progress tab's streak card; handedness
+    -- picks which side the floating Menu button/drawer sit on; avatar_*
+    -- (app_ideas #30) are the Social leaderboard's avatar, stored as
+    -- short KEYS ("star", "navy", "sky") - app.py owns what each looks
+    -- like, so retuning a palette needs no data migration. NULL = never
+    -- picked (the leaderboard falls back to a letter-in-a-circle).
+    CREATE TABLE IF NOT EXISTS user_settings (
+        user_id                   TEXT PRIMARY KEY,
+        alias                     TEXT,
+        auto_add_community_words  BOOLEAN DEFAULT FALSE,
+        share_progress            BOOLEAN DEFAULT FALSE,
+        daily_word_target         INTEGER DEFAULT 10,
+        dark_mode                 BOOLEAN DEFAULT FALSE,
+        handedness                TEXT DEFAULT 'Right',
+        avatar_icon               TEXT,
+        avatar_primary            TEXT,
+        avatar_secondary          TEXT
+    );
+    CREATE SEQUENCE IF NOT EXISTS app_idea_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS app_ideas (
+        id            INTEGER PRIMARY KEY DEFAULT nextval('app_idea_id_seq'),
+        user_id       TEXT NOT NULL,
+        idea_text     TEXT NOT NULL,
+        submitted_at  TIMESTAMP NOT NULL,
+        idea_type     TEXT NOT NULL DEFAULT 'Improvement',
+        status        TEXT NOT NULL DEFAULT 'Submitted'
+    );
+"""
+
+
 def _create_schema(con):
-    # Serialize concurrent first-boots (two containers during a redeploy)
-    # - transaction-scoped, released at commit.
+    # Every statement but allowed_users' conditional seeding goes out as
+    # ONE multi-statement string (one network round trip instead of
+    # eleven - DDL statements were costing 150-280ms EACH against a
+    # hosted database, ~2s on every server start). Transaction-scoped
+    # advisory lock serializes concurrent first-boots (two containers
+    # during a redeploy); released at commit.
+    con.begin()
     con.execute("SELECT pg_advisory_xact_lock(727274)")
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS word_content (
-            word            TEXT PRIMARY KEY,
-            definition      TEXT NOT NULL,
-            part_of_speech  TEXT,
-            example         TEXT,
-            synonyms        TEXT,
-            phonetic        TEXT,
-            audio_url       TEXT,
-            antonyms        TEXT,
-            etymology       TEXT
-        )
-    """)
-    # active (app_ideas #18) - per user, per word, deliberately NOT on
-    # word_content: deactivating a word for yourself has no effect on
-    # anyone else who also has it in their own list. Defaults TRUE so
-    # every word on every user's list - present and future - starts
-    # (and stays, until someone actually deactivates it) active.
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS user_words (
-            user_id           TEXT NOT NULL,
-            word              TEXT NOT NULL REFERENCES word_content(word),
-            date_added        TIMESTAMP NOT NULL,
-            repetition        INTEGER DEFAULT 0,
-            ease_factor       DOUBLE PRECISION DEFAULT 2.5,
-            interval_days     INTEGER DEFAULT 0,
-            next_review_date  DATE DEFAULT CURRENT_DATE,
-            active            BOOLEAN DEFAULT TRUE,
-            PRIMARY KEY (user_id, word)
-        )
-    """)
-    con.execute("CREATE SEQUENCE IF NOT EXISTS attempt_id_seq START 1")
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS quiz_attempts (
-            id            INTEGER PRIMARY KEY DEFAULT nextval('attempt_id_seq'),
-            user_id       TEXT NOT NULL,
-            word          TEXT NOT NULL REFERENCES word_content(word),
-            attempt_date  TIMESTAMP NOT NULL,
-            your_answer   TEXT NOT NULL,
-            accuracy      INTEGER NOT NULL,
-            got_right     TEXT,   -- newline-joined bullet points
-            got_missed    TEXT,   -- newline-joined bullet points
-            note          TEXT
-        )
-    """)
-    # Nearly every query filters quiz_attempts/user_words by user - cheap
-    # indexes now that this is a real server (DuckDB scanned a local file
-    # and didn't need them).
-    con.execute("CREATE INDEX IF NOT EXISTS quiz_attempts_user_date_idx ON quiz_attempts (user_id, attempt_date)")
-    con.execute("CREATE INDEX IF NOT EXISTS quiz_attempts_user_word_idx ON quiz_attempts (user_id, word)")
-    # One row per user - the Settings page (see app.py). alias is capped
-    # at 10 chars by the UI's max_chars, not enforced here too.
-    # daily_word_target feeds the Progress tab's streak card;
-    # handedness picks which side the floating Menu button/drawer sit
-    # on; avatar_* (app_ideas #30) are the Social leaderboard's avatar,
-    # stored as short KEYS ("star", "navy", "sky") - app.py owns what each
-    # looks like, so retuning a palette needs no data migration. NULL =
-    # never picked (the leaderboard falls back to a letter-in-a-circle).
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS user_settings (
-            user_id                   TEXT PRIMARY KEY,
-            alias                     TEXT,
-            auto_add_community_words  BOOLEAN DEFAULT FALSE,
-            share_progress            BOOLEAN DEFAULT FALSE,
-            daily_word_target         INTEGER DEFAULT 10,
-            dark_mode                 BOOLEAN DEFAULT FALSE,
-            handedness                TEXT DEFAULT 'Right',
-            avatar_icon               TEXT,
-            avatar_primary            TEXT,
-            avatar_secondary          TEXT
-        )
-    """)
     # allowed_users - who may sign in (the owner stays hardcoded in
     # auth.OWNER_EMAILS as an always-allowed fallback, so a database
     # problem can never lock them out). Emails are stored lowercase.
@@ -365,12 +451,12 @@ def _create_schema(con):
         "SELECT COUNT(*) FROM information_schema.tables "
         "WHERE table_schema = current_schema() AND table_name = 'allowed_users'"
     ).fetchone()[0]
-    con.execute("""
+    con.execute(_SCHEMA_DDL + """
         CREATE TABLE IF NOT EXISTS allowed_users (
             email     TEXT PRIMARY KEY,
             added_by  TEXT,
             added_at  TIMESTAMP
-        )
+        );
     """)
     if not _allowed_table_existed:
         for _email in _SEED_ALLOWED_EMAILS:
@@ -379,17 +465,6 @@ def _create_schema(con):
                 "ON CONFLICT (email) DO NOTHING",
                 [_email, datetime.now(timezone.utc)],
             )
-    con.execute("CREATE SEQUENCE IF NOT EXISTS app_idea_id_seq START 1")
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS app_ideas (
-            id            INTEGER PRIMARY KEY DEFAULT nextval('app_idea_id_seq'),
-            user_id       TEXT NOT NULL,
-            idea_text     TEXT NOT NULL,
-            submitted_at  TIMESTAMP NOT NULL,
-            idea_type     TEXT NOT NULL DEFAULT 'Improvement',
-            status        TEXT NOT NULL DEFAULT 'Submitted'
-        )
-    """)
 
 
 def add_word(user_id: str, word: str, definition: str, part_of_speech: str = "", example: str = "",
