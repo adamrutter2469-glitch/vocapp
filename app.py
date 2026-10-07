@@ -1150,7 +1150,8 @@ st.markdown(
     [data-testid="stPopoverBody"] label p {{
         color: {PAL['text']} !important;
     }}
-    [data-testid="stBaseButton-secondary"], [data-testid="stPopoverButton"] {{
+    [data-testid="stBaseButton-secondary"], [data-testid="stPopoverButton"],
+    [data-testid="stBaseButton-secondaryFormSubmit"] {{
         background-color: {PAL['surface']};
         color: {PAL['text']};
         border-color: {PAL['border_15']};
@@ -1254,9 +1255,25 @@ st.markdown(
        capped at 480px with a gutter on BOTH sides, which wasted space
        on the side the button isn't on (app_ideas #30 follow-up, per
        user request). */
-    .st-key-settings_form {{
+    .st-key-settings_form, .st-key-members_form {{
         width: calc(100% - 100px);
         margin: {"0 auto 0 0" if NAV_SIDE == "right" else "0 0 0 auto"};
+    }}
+    /* Members page (owner only): each invited person is one row - their
+       email + status on the left, a Remove button on the right - kept on
+       ONE line even at phone width (same Streamlit stColumn wrap/min-width
+       override as the My Words tiles), with the email allowed to wrap
+       inside its own column instead of pushing the button off. */
+    [class*="st-key-member_row_"] [data-testid="stHorizontalBlock"] {{
+        flex-wrap: nowrap !important;
+        align-items: center;
+    }}
+    [class*="st-key-member_row_"] [data-testid="stColumn"] {{
+        min-width: 0 !important;
+    }}
+    [class*="st-key-member_row_"] {{
+        border-bottom: 1px solid {PAL['border_08']};
+        padding: 0.35rem 0;
     }}
     /* Save Settings: centered under the form instead of left-aligned
        (Streamlit's own button default) - on a left-handed layout that
@@ -1331,6 +1348,13 @@ _PAGES = ["Quiz Me", "Add Word", "My Words", "Progress", "Social"]
 # apart from the 4 core pages above by a divider (see the drawer's own
 # render below), not mixed into the same button stack.
 _UTILITY_PAGES = ["Settings", "About", "App Ideas"]
+# Members (the invite list) is for the owner only - read from st.user the
+# same early way Dark Mode/Handedness are, since this runs before
+# auth.require_login(). A non-owner never gets the nav entry, and the
+# page itself ALSO re-checks (see the Members section) - hiding the
+# button alone isn't the access control.
+if auth.is_owner(st.user.email if st.user.is_logged_in else None):
+    _UTILITY_PAGES = _UTILITY_PAGES + ["Members"]
 
 
 def _toggle_nav():
@@ -3007,6 +3031,95 @@ if st.session_state["current_page"] == "Settings":
             st.rerun()
 
 # ------------------------------------------------------------
+# Members (owner only)
+# ------------------------------------------------------------
+# The invite list: who's allowed to sign in (db.allowed_users, checked by
+# auth.require_login). Inviting someone is just adding their Google
+# email here - no code change or deploy. Removing revokes sign-in but
+# keeps their words/history, so re-inviting restores everything.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _invite_member(email):
+    email = email.strip().lower()
+    if not _EMAIL_RE.match(email):
+        st.session_state["members_msg"] = ("warning", "That doesn't look like an email address.")
+    elif db.add_allowed_user(email, _uid()):
+        st.session_state["members_msg"] = ("success", f"Invited {email}. They can sign in with that Google account now.")
+    else:
+        st.session_state["members_msg"] = ("info", f"{email} is already invited.")
+
+
+def _remove_member(email):
+    db.remove_allowed_user(email)
+    st.session_state["confirm_remove_member"] = None
+    st.session_state["members_msg"] = ("success", f"Removed {email}. Their words and history are kept.")
+
+
+if st.session_state["current_page"] == "Members" and auth.is_owner(_uid()):
+    st.subheader("Members")
+    st.session_state.setdefault("confirm_remove_member", None)
+    st.session_state.setdefault("members_form_version", 0)
+    with st.container(key="members_form"):
+        st.caption(
+            "Only people on this list can sign in. Add the email of the Google "
+            "account they'll use. (While the Google sign-in app is still in "
+            "Testing mode, they also need to be a test user in the Google Cloud "
+            "console.)"
+        )
+        with st.form(f"invite_form_{st.session_state['members_form_version']}", clear_on_submit=True):
+            _invite_email = st.text_input(
+                "Email to invite", placeholder="friend@gmail.com", label_visibility="collapsed",
+            )
+            if st.form_submit_button("Invite"):
+                _invite_member(_invite_email)
+                st.rerun()
+        if "members_msg" in st.session_state:
+            _kind, _text = st.session_state.pop("members_msg")
+            getattr(st, _kind)(_text)
+
+        _members = db.list_allowed_users()
+        st.markdown(f"**{len(_members)} on the invite list**")
+        for _i, _m in enumerate(_members):
+            with st.container(key=f"member_row_{_i}"):
+                _c_info, _c_btn = st.columns([4, 1.4], gap="small")
+                with _c_info:
+                    _status = []
+                    if auth.is_owner(_m["email"]):
+                        _status.append("Owner")
+                    if _m["joined"]:
+                        _status.append(f"{_m['words']} words")
+                        if _m["last_quiz"]:
+                            _status.append(f"last quiz {_relative_time(_m['last_quiz'])}")
+                        else:
+                            _status.append("no quizzes yet")
+                    else:
+                        _status.append("hasn't signed in yet")
+                    # st.html, not st.markdown - markdown auto-links
+                    # anything that looks like an email address (blue
+                    # underlined mailto link; tried an &#64; entity first,
+                    # which gets decoded before linkifying and doesn't
+                    # help), which reads as clickable and isn't. Color is
+                    # set inline since st.html text doesn't pick up Dark
+                    # Mode's text color on its own.
+                    st.html(
+                        f"<div style='color:{PAL['text']};font-weight:700;margin-top:0.25rem'>"
+                        f"{html.escape(_m['email'])}</div>"
+                    )
+                    st.caption(" · ".join(_status))
+                with _c_btn:
+                    if auth.is_owner(_m["email"]) or _m["email"] == _uid():
+                        pass  # never offer to remove yourself/the owner
+                    elif st.session_state["confirm_remove_member"] == _m["email"]:
+                        st.button("Yes, remove", key=f"member_yes_{_i}", type="primary",
+                                  on_click=_remove_member, args=(_m["email"],))
+                        st.button("Cancel", key=f"member_no_{_i}",
+                                  on_click=lambda: st.session_state.update(confirm_remove_member=None))
+                    else:
+                        st.button("Remove", key=f"member_rm_{_i}",
+                                  on_click=lambda e=_m["email"]: st.session_state.update(confirm_remove_member=e))
+
+# ------------------------------------------------------------
 # About
 # ------------------------------------------------------------
 if st.session_state["current_page"] == "About":
@@ -3141,7 +3254,7 @@ if st.session_state["current_page"] == "App Ideas":
     # list above (including the owner's own ideas there) is read-only,
     # since status is meant to reflect what's actually been reviewed/
     # built, not something a submitter sets themselves.
-    if _uid() == db._LEGACY_OWNER_EMAIL:
+    if auth.is_owner(_uid()):
         with st.expander("All submitted ideas (owner view)"):
             # Grouped Submitted -> Completed -> Rejected (same order as
             # the three sections above), not just newest-first - a

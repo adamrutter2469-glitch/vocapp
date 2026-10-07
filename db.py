@@ -49,6 +49,15 @@ LOCAL_TZ = ZoneInfo("America/Chicago")
 # _migrate_legacy_single_user_schema.
 _LEGACY_OWNER_EMAIL = "adamrutter2469@gmail.com"
 
+# Everyone who was in auth.ALLOWED_EMAILS when that moved into the
+# allowed_users table - used only to seed the table the first time it's
+# created (see _create_schema).
+_SEED_ALLOWED_EMAILS = [
+    "adamrutter2469@gmail.com",
+    "riley.kaitlyn96@gmail.com",
+    "bartelmealex@gmail.com",
+]
+
 
 def _today_local():
     return datetime.now(LOCAL_TZ).date()
@@ -272,6 +281,29 @@ def _create_schema(con):
     con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_icon TEXT")
     con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_primary TEXT")
     con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_secondary TEXT")
+    # allowed_users - who may sign in (replaces the hardcoded
+    # auth.ALLOWED_EMAILS set; the owner stays hardcoded there as an
+    # always-allowed fallback, so a database problem can never lock them
+    # out). Emails are stored lowercase. Seeded ONCE, when the table
+    # doesn't exist yet - not on every schema run, or a friend the owner
+    # removed would silently reappear. See add_allowed_user & co below.
+    _allowed_table_existed = con.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'allowed_users'"
+    ).fetchone()[0]
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS allowed_users (
+            email     TEXT PRIMARY KEY,
+            added_by  TEXT,
+            added_at  TIMESTAMP
+        )
+    """)
+    if not _allowed_table_existed:
+        for _email in _SEED_ALLOWED_EMAILS:
+            con.execute(
+                "INSERT INTO allowed_users (email, added_by, added_at) VALUES (?, 'seed', ?) "
+                "ON CONFLICT (email) DO NOTHING",
+                [_email, datetime.now(timezone.utc)],
+            )
     con.execute("CREATE SEQUENCE IF NOT EXISTS app_idea_id_seq START 1")
     con.execute("""
         CREATE TABLE IF NOT EXISTS app_ideas (
@@ -913,6 +945,82 @@ def save_user_settings(
             avatar_icon, avatar_primary, avatar_secondary,
         ],
     )
+    con.close()
+    r2_storage.upload_db()
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def is_email_allowed(email: str, refresh: bool = False) -> bool:
+    """Whether `email` is on the invite list. refresh=True re-pulls from
+    R2 first (get_connection(fresh=True)) - used by the login check only
+    after a plain cached read says "no", so an invite the owner just
+    added from another process (the deployed app vs a local one) is seen
+    right away instead of only after this process restarts, without
+    paying a download on every normal login."""
+    con = get_connection(fresh=refresh)
+    row = con.execute(
+        "SELECT 1 FROM allowed_users WHERE email = ?", [_normalize_email(email)]
+    ).fetchone()
+    con.close()
+    return row is not None
+
+
+def list_allowed_users() -> list[dict]:
+    """The invite list for the owner's Members page, each with what's
+    knowable WITHOUT a write at sign-in time: `joined` (they have a
+    user_settings row - i.e. they've signed in at least once and been
+    set up), their word count, and last_quiz (most recent quiz attempt).
+    Owner-first, then oldest invite first."""
+    con = get_connection()
+    rows = con.execute(
+        """
+        SELECT a.email, a.added_by, a.added_at,
+               (SELECT COUNT(*) FROM user_settings s WHERE s.user_id = a.email) > 0 AS joined,
+               (SELECT COUNT(*) FROM user_words w WHERE w.user_id = a.email) AS words,
+               (SELECT MAX(q.attempt_date) FROM quiz_attempts q WHERE q.user_id = a.email) AS last_quiz
+        FROM allowed_users a
+        ORDER BY (a.email = ?) DESC, a.added_at ASC, a.email ASC
+        """,
+        [_LEGACY_OWNER_EMAIL],
+    ).fetchall()
+    con.close()
+    return [
+        {"email": r[0], "added_by": r[1], "added_at": r[2], "joined": bool(r[3]),
+         "words": r[4], "last_quiz": r[5]}
+        for r in rows
+    ]
+
+
+def add_allowed_user(email: str, added_by: str) -> bool:
+    """Invites `email`. Returns False if they were already on the list
+    (nothing changes), True if newly added. Validation (is it an email
+    at all) is the caller's job - see app.py's Members page."""
+    email = _normalize_email(email)
+    con = get_connection(fresh=True)
+    existed = con.execute("SELECT 1 FROM allowed_users WHERE email = ?", [email]).fetchone()
+    if existed:
+        con.close()
+        return False
+    con.execute(
+        "INSERT INTO allowed_users (email, added_by, added_at) VALUES (?, ?, ?)",
+        [email, added_by, datetime.now(timezone.utc)],
+    )
+    con.close()
+    r2_storage.upload_db()
+    return True
+
+
+def remove_allowed_user(email: str) -> None:
+    """Revokes sign-in access. Deliberately leaves the person's words,
+    quiz history and settings alone - this is about access, not data, so
+    re-inviting them later puts everything back exactly as it was. (The
+    owner can't be locked out regardless: auth.OWNER_EMAILS is checked
+    first, independent of this table.)"""
+    con = get_connection(fresh=True)
+    con.execute("DELETE FROM allowed_users WHERE email = ?", [_normalize_email(email)])
     con.close()
     r2_storage.upload_db()
 
