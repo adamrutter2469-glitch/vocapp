@@ -1,8 +1,18 @@
 """
-DuckDB storage layer for vocapp.
+PostgreSQL storage layer for vocapp (hosted on Neon; connection string in
+the DATABASE_URL environment variable - .env locally, Streamlit Cloud's
+Secrets there, which also surfaces as env vars).
 
-Schema (multi-user, see _migrate_legacy_single_user_schema for how this
-came from the original single-user shape):
+Moved here from a single DuckDB file synced whole-file through Cloudflare
+R2: every write used to download and re-upload the entire database
+(~16 MB, 10-20 seconds per save) and two processes could silently
+overwrite each other's changes. A real server database makes each write
+a few-millisecond row change and lets any number of sessions write at
+once. The query code below is deliberately unchanged in shape - see
+_Conn for the small wrapper that keeps the `con = get_connection();
+con.execute(sql, params)...; con.close()` style working.
+
+Schema (multi-user):
   word_content   - one row per distinct word, SHARED across every user.
                     Dictionary content (definition/synonyms/etymology/...)
                     is the same regardless of who looked it up, so this
@@ -14,39 +24,38 @@ came from the original single-user shape):
                     independent rows here, each on their own schedule.
   quiz_attempts  - one row per graded quiz attempt, tagged with user_id -
                     so accuracy history persists permanently per user.
-
-DB file lives at vocab.duckdb, next to this script.
+  user_settings, app_ideas, allowed_users - see _create_schema.
 """
 
-import random
+import os
 import threading
-import time
-import duckdb
-from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-import r2_storage
+import psycopg
+from dotenv import load_dotenv
+from psycopg.adapt import Loader
+from psycopg.types.datetime import DatetimeNoTzDumper
+from psycopg_pool import ConnectionPool
 
-DB_PATH = Path(__file__).parent / "vocab.duckdb"
+load_dotenv()
 
 # The app's one fixed timezone for "what day is it" / "what day did this
 # attempt happen on" - Streamlit Cloud's server runs on UTC, not the
-# user's own clock, so relying on DuckDB's CURRENT_DATE (server time) or
-# casting a stored timestamp straight to DATE silently buckets things by
-# the WRONG day for anyone west of Greenwich - confirmed live: quiz
-# counts were landing on a different day than the user expected. Every
-# TIMESTAMP column still stores real UTC instants (unambiguous, correct
-# storage practice) - only the "which day" logic below, done in Python
-# rather than SQL, converts to this zone. Every user of this app is
-# assumed to be in this zone (a handful of friends, not a public app) -
-# a real per-user timezone setting would be the next thing to add if
+# user's own clock, so relying on the database's CURRENT_DATE (server
+# time) or casting a stored timestamp straight to DATE silently buckets
+# things by the WRONG day for anyone west of Greenwich - confirmed live:
+# quiz counts were landing on a different day than the user expected.
+# Every TIMESTAMP column still stores real UTC instants (unambiguous,
+# correct storage practice) - only the "which day" logic below, done in
+# Python rather than SQL, converts to this zone. Every user of this app
+# is assumed to be in this zone (a handful of friends, not a public app)
+# - a real per-user timezone setting would be the next thing to add if
 # that stops being true.
 LOCAL_TZ = ZoneInfo("America/Chicago")
 
 # Who all data created before the multi-user migration belonged to - the
-# app had exactly one user before this schema existed. See
-# _migrate_legacy_single_user_schema.
+# app had exactly one user before the schema was split per-user.
 _LEGACY_OWNER_EMAIL = "adamrutter2469@gmail.com"
 
 # Everyone who was in auth.ALLOWED_EMAILS when that moved into the
@@ -73,100 +82,185 @@ def today_local():
 def _local_day_utc_bounds(day):
     """[start, end) UTC instants spanning one full LOCAL_TZ calendar
     day - lets a "did this happen today" query stay a plain timestamp
-    range comparison (which DuckDB handles natively) instead of needing
-    a timezone-conversion SQL function (which needs DuckDB's icu
-    extension, an extra thing that has to successfully install/load,
-    including under whatever restricted environment a cloud deploy
-    runs in - not worth the risk for something this fundamental)."""
+    range comparison instead of needing a timezone-conversion SQL
+    function."""
     start_local = datetime(day.year, day.month, day.day, tzinfo=LOCAL_TZ)
     end_local = datetime(day.year, day.month, day.day, tzinfo=LOCAL_TZ) + timedelta(days=1)
     return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
 def _to_local_date(dt):
-    """A stored attempt_date/date_added comes back from DuckDB as a
-    naive datetime - naive because the TIMESTAMP column itself has no
-    timezone concept, but the value in it really is UTC (that's what
-    every INSERT here writes) - so it's stamped UTC before converting,
-    not just converted as if it were already LOCAL_TZ."""
+    """A stored attempt_date/date_added comes back as a naive datetime -
+    naive because the TIMESTAMP column itself has no timezone concept,
+    but the value in it really is UTC (that's what every INSERT here
+    writes - see _UtcNaiveDatetimeDumper) - so it's stamped UTC before
+    converting, not just converted as if it were already LOCAL_TZ."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(LOCAL_TZ).date()
 
-# vocab.duckdb lives inside OneDrive's synced Documents folder, so every
-# write (each quiz attempt, each word added) can get OneDrive to grab a
-# brief file lock while it uploads the change - if a read lands in that
-# same instant, duckdb.connect() raises IOException ("being used by
-# another process") even though nothing in this app is holding the file.
-# Retrying a few times with a short backoff rides out that window instead
-# of surfacing it as a crash; a real, non-transient problem (missing
-# file, corrupt DB, actual concurrent app instance) still raises once
-# retries are exhausted. This also happens to help with the OTHER source
-# of the same IOException now that several people can use the app at
-# once - two people's writes landing close together on Streamlit Cloud's
-# one shared process. Fine at "a handful of friends" scale; if this ever
-# needs to handle real concurrent load, the right fix is a single
-# long-lived shared connection (or a real multi-writer database) instead
-# of opening/closing a new one per call, not a bigger retry count here.
-_CONNECT_RETRIES = 5
-_CONNECT_RETRY_DELAY_SECONDS = 0.2
+
+# ---------------------------------------------------------------------
+# Connection layer
+# ---------------------------------------------------------------------
+
+class _UtcNaiveDatetimeDumper(DatetimeNoTzDumper):
+    """Every datetime goes to the database as a naive UTC `timestamp`,
+    whatever it arrives as. The code passes timezone-aware UTC datetimes
+    (datetime.now(timezone.utc), _local_day_utc_bounds) and the columns
+    are plain TIMESTAMP holding UTC - left alone, the driver would send
+    aware values as timestamptz and let the SERVER's session timezone
+    decide the conversion, which can't be pinned on a pooled connection
+    (Neon's pooler rejects the `options` startup parameter and resets
+    SET between transactions). Doing the conversion here removes that
+    dependency entirely."""
+
+    def upgrade(self, obj, format):
+        # The driver asks a dumper registered for a type whether a more
+        # specific one fits this particular value (that's how it normally
+        # picks timestamptz vs timestamp); this one handles every
+        # datetime itself, aware or naive, so it's already the answer.
+        return self
+
+    def dump(self, obj):
+        if obj.tzinfo is not None:
+            obj = obj.astimezone(timezone.utc).replace(tzinfo=None)
+        return super().dump(obj)
+
+
+class _NumericAsFloat(Loader):
+    """AVG()/ROUND() come back from Postgres as `numeric` (Decimal in
+    Python); everything downstream - formatting, pandas/altair, plain
+    arithmetic mixed with floats - expects the float DuckDB used to
+    return. Converting at the driver means no per-query ::float casts."""
+
+    def load(self, data):
+        return float(bytes(data).decode())
+
+
+_pool = None
+_pool_lock = threading.Lock()
+
+
+def _configure(conn):
+    conn.adapters.register_dumper(datetime, _UtcNaiveDatetimeDumper)
+    conn.adapters.register_loader("numeric", _NumericAsFloat)
+
+
+def _get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is not None:
+        return _pool
+    with _pool_lock:
+        if _pool is None:
+            url = os.environ.get("DATABASE_URL")
+            if not url:
+                raise RuntimeError(
+                    "DATABASE_URL not set - add the Postgres (Neon) connection "
+                    "string to .env locally, or to Streamlit Cloud's Secrets."
+                )
+            pool = ConnectionPool(
+                url,
+                min_size=1,
+                max_size=int(os.environ.get("DB_POOL_MAX", "8")),
+                # prepare_threshold=None: no server-side prepared
+                # statements - Neon's pooler (PgBouncer, transaction
+                # mode) hands each transaction a possibly-different
+                # backend connection, where a statement prepared on an
+                # earlier one doesn't exist.
+                kwargs={"prepare_threshold": None, "autocommit": False},
+                configure=_configure,
+                # Neon suspends an idle database after a few minutes and
+                # drops its connections; validate one before handing it
+                # out so the first request after a quiet spell reconnects
+                # instead of failing on a dead socket.
+                check=ConnectionPool.check_connection,
+                open=False,
+            )
+            pool.open(wait=True, timeout=30)
+            _pool = pool
+    return _pool
+
+
+class _Conn:
+    """The tiny slice of DuckDB's connection API this module's functions
+    use - execute(sql, params) returning something with fetchone()/
+    fetchall(), .description, .close() - on top of a pooled psycopg
+    connection, so the data functions below didn't need rewriting.
+
+    - `?` placeholders are translated to psycopg's `%s` (and literal `%`
+      escaped) in execute().
+    - Everything between get_connection() and close() is ONE transaction,
+      committed by close(): a multi-statement write (delete_word,
+      initialize_new_user) is now atomic, where DuckDB autocommitted each
+      statement separately.
+    - If a caller raises before close(), __del__ rolls back and returns
+      the connection to the pool rather than leaking it."""
+
+    def __init__(self, pool, raw):
+        self._pool = pool
+        self._raw = raw
+        self._cur = None
+
+    @staticmethod
+    def _translate(sql, params):
+        if params is None:
+            return sql
+        return sql.replace("%", "%%").replace("?", "%s")
+
+    def execute(self, sql, params=None):
+        self._cur = self._raw.execute(self._translate(sql, params), params)
+        return self._cur
+
+    def executemany(self, sql, seq):
+        with self._raw.cursor() as cur:
+            cur.executemany(self._translate(sql, [None]), seq)
+
+    @property
+    def description(self):
+        return self._cur.description if self._cur is not None else None
+
+    def close(self):
+        raw, self._raw = self._raw, None
+        if raw is None:
+            return
+        try:
+            raw.commit()
+        except Exception:
+            raw.rollback()
+            raise
+        finally:
+            self._pool.putconn(raw)
+
+    def __del__(self):
+        raw = getattr(self, "_raw", None)
+        if raw is not None:
+            try:
+                raw.rollback()
+            finally:
+                self._pool.putconn(raw)
+                self._raw = None
+
 
 # _ensure_schema's DDL only needs to actually run once per process -
-# guarded so it does, rather than re-running on every single
-# get_connection() call (previously every one, of which a single script
-# rerun triggers many - one per db.py function call). That mattered
-# because it's a real, reproducible crash, not just a theoretical one:
-# confirmed live, two concurrent Streamlit sessions in this one process
-# each opening their own connection and racing to run this DDL raised
-# `_duckdb.TransactionException: Catalog write-write conflict on alter
-# with "word_content"`. The lock's own double-checked-locking shape
-# (check, acquire, check again) is what keeps a second thread that was
-# already blocked on the lock from redundantly re-running the DDL the
-# first thread just finished, once it gets its turn.
+# guarded so it does, rather than on every get_connection() call. The
+# lock's double-checked shape (check, acquire, check again) keeps a
+# second thread that was blocked on it from redundantly re-running the
+# DDL the first thread just finished. Across PROCESSES (a redeploy
+# overlapping the old container) the DDL is serialized by a Postgres
+# advisory lock inside _create_schema instead.
 _schema_lock = threading.Lock()
 _schema_ready = False
 
 
-def get_connection(fresh: bool = False):
-    # Plain call: no-op after the first call in this process (see
-    # r2_storage's own docstring) - pulling the R2 copy down before
-    # opening a connection is what makes a freshly-started process (a
-    # Streamlit Cloud container coming up after a redeploy, in
-    # particular) see the real data instead of an empty local file.
-    #
-    # fresh=True (app_ideas #23/#24): forces a re-pull even if this
-    # process already downloaded once. Every db.py function that goes
-    # on to call r2_storage.upload_db() passes this, so a write always
-    # starts from the actual latest R2 state - not whatever this
-    # process's local copy happened to look like at startup, possibly
-    # hours or days stale - right before it re-uploads the whole file.
-    # See r2_storage.py's KNOWN LIMITATION/MITIGATION for why this
-    # matters: that's the exact mechanism behind every "idea status
-    # reverted" incident so far (#16, #19, #23, #24). Read-only callers
-    # never pass this - a read was never what caused the data loss, so
-    # there's no reason to pay an R2 round-trip for one.
-    r2_storage.download_db(force=fresh)
-    if fresh:
-        # A forced download REPLACES the local file with R2's copy, which
-        # predates any schema change this process has made but not yet
-        # uploaded (found live adding the avatar_* columns, app_ideas
-        # #30: Settings' Save re-downloaded R2's column-less copy, then
-        # its INSERT failed with "avatar_icon not found" - the
-        # once-per-process _schema_ready flag meant the migration never
-        # re-ran on the new file). _create_schema is idempotent
-        # (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS), so re-running it
-        # on every fresh pull is safe, just a few cheap DDL statements.
-        global _schema_ready
-        _schema_ready = False
-    for attempt in range(_CONNECT_RETRIES):
-        try:
-            con = duckdb.connect(str(DB_PATH))
-            break
-        except duckdb.IOException:
-            if attempt == _CONNECT_RETRIES - 1:
-                raise
-            time.sleep(_CONNECT_RETRY_DELAY_SECONDS * (attempt + 1))
-    _ensure_schema(con)
+def get_connection():
+    pool = _get_pool()
+    con = _Conn(pool, pool.getconn())
+    try:
+        _ensure_schema(con)
+    except Exception:
+        con.close()
+        raise
     return con
 
 
@@ -178,10 +272,18 @@ def _ensure_schema(con):
         if _schema_ready:
             return
         _create_schema(con)
+        # Commit the DDL NOW, in its own transaction - not left riding on
+        # the caller's: if that caller later raised before close(), the
+        # rollback would silently undo the schema while _schema_ready
+        # stayed True.
+        con._raw.commit()
         _schema_ready = True
 
 
 def _create_schema(con):
+    # Serialize concurrent first-boots (two containers during a redeploy)
+    # - transaction-scoped, released at commit.
+    con.execute("SELECT pg_advisory_xact_lock(727274)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS word_content (
             word            TEXT PRIMARY KEY,
@@ -198,31 +300,21 @@ def _create_schema(con):
     # active (app_ideas #18) - per user, per word, deliberately NOT on
     # word_content: deactivating a word for yourself has no effect on
     # anyone else who also has it in their own list. Defaults TRUE so
-    # every word already on every user's list - present and future -
-    # starts (and stays, until someone actually deactivates it) active,
-    # per user request ("words on the list should default to active
-    # for all users").
+    # every word on every user's list - present and future - starts
+    # (and stays, until someone actually deactivates it) active.
     con.execute("""
         CREATE TABLE IF NOT EXISTS user_words (
             user_id           TEXT NOT NULL,
             word              TEXT NOT NULL REFERENCES word_content(word),
             date_added        TIMESTAMP NOT NULL,
             repetition        INTEGER DEFAULT 0,
-            ease_factor       DOUBLE DEFAULT 2.5,
+            ease_factor       DOUBLE PRECISION DEFAULT 2.5,
             interval_days     INTEGER DEFAULT 0,
             next_review_date  DATE DEFAULT CURRENT_DATE,
             active            BOOLEAN DEFAULT TRUE,
             PRIMARY KEY (user_id, word)
         )
     """)
-    # Added after this table already existed in deployed DBs - same
-    # ALTER TABLE ADD COLUMN pattern (and same "no NOT NULL - DuckDB
-    # doesn't support adding a constrained column" limitation) as
-    # app_ideas'/user_settings' own migrations. Confirmed live: ADD
-    # COLUMN ... DEFAULT TRUE backfills every EXISTING row to TRUE too,
-    # not just new ones going forward - exactly the "default to active"
-    # behavior asked for, with no separate backfill statement needed.
-    con.execute("ALTER TABLE user_words ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE")
     con.execute("CREATE SEQUENCE IF NOT EXISTS attempt_id_seq START 1")
     con.execute("""
         CREATE TABLE IF NOT EXISTS quiz_attempts (
@@ -237,20 +329,19 @@ def _create_schema(con):
             note          TEXT
         )
     """)
-    # One row per user - the Settings page (see app.py). alias is
-    # capped at 10 chars by the UI's max_chars, not enforced here too -
-    # this table isn't touched by anything else that could put a longer
-    # value in it. auto_add_community_words/share_progress are plain
-    # settings storage only, for now - neither one has an actual effect
-    # yet (auto-adding from a shared community word list, and a way for
-    # others to see your progress, are both still-unbuilt features).
-    # daily_word_target feeds the Progress tab's streak card (see
-    # get_quiz_streak) - how many words/day counts as "kept the streak
-    # going", user-editable instead of the flat 10 it used to be.
+    # Nearly every query filters quiz_attempts/user_words by user - cheap
+    # indexes now that this is a real server (DuckDB scanned a local file
+    # and didn't need them).
+    con.execute("CREATE INDEX IF NOT EXISTS quiz_attempts_user_date_idx ON quiz_attempts (user_id, attempt_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS quiz_attempts_user_word_idx ON quiz_attempts (user_id, word)")
+    # One row per user - the Settings page (see app.py). alias is capped
+    # at 10 chars by the UI's max_chars, not enforced here too.
+    # daily_word_target feeds the Progress tab's streak card;
     # handedness picks which side the floating Menu button/drawer sit
-    # on (see app.py) - 'Right' matches the original, only-ever-right
-    # behavior, so a user who's never touched this setting sees no
-    # change.
+    # on; avatar_* (app_ideas #30) are the Social leaderboard's avatar,
+    # stored as short KEYS ("star", "navy", "sky") - app.py owns what each
+    # looks like, so retuning a palette needs no data migration. NULL =
+    # never picked (the leaderboard falls back to a letter-in-a-circle).
     con.execute("""
         CREATE TABLE IF NOT EXISTS user_settings (
             user_id                   TEXT PRIMARY KEY,
@@ -259,36 +350,20 @@ def _create_schema(con):
             share_progress            BOOLEAN DEFAULT FALSE,
             daily_word_target         INTEGER DEFAULT 10,
             dark_mode                 BOOLEAN DEFAULT FALSE,
-            handedness                TEXT DEFAULT 'Right'
+            handedness                TEXT DEFAULT 'Right',
+            avatar_icon               TEXT,
+            avatar_primary            TEXT,
+            avatar_secondary          TEXT
         )
     """)
-    # daily_word_target/dark_mode/handedness were added after this table
-    # already existed in deployed DBs - see the same-shaped app_ideas
-    # migration below for why this needs its own ALTER (CREATE TABLE IF
-    # NOT EXISTS is a no-op against an existing table) and why it can't
-    # carry NOT NULL.
-    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS daily_word_target INTEGER DEFAULT 10")
-    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dark_mode BOOLEAN DEFAULT FALSE")
-    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS handedness TEXT DEFAULT 'Right'")
-    # avatar_* (app_ideas #30) - the Social tab's leaderboard avatar: a
-    # glyph (avatar_icon) in the secondary color, on a primary-color
-    # circle, ringed in the secondary. Stored as short KEYS ("star",
-    # "navy", "sky"), not hex/markup - app.py owns what each key looks
-    # like, so retuning a palette later updates everyone's avatar
-    # without a data migration. NULL = never picked: the leaderboard
-    # falls back to the old letter-in-a-circle. No NOT NULL/DEFAULT
-    # beyond NULL, same ALTER limitation as the columns above.
-    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_icon TEXT")
-    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_primary TEXT")
-    con.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_secondary TEXT")
-    # allowed_users - who may sign in (replaces the hardcoded
-    # auth.ALLOWED_EMAILS set; the owner stays hardcoded there as an
-    # always-allowed fallback, so a database problem can never lock them
-    # out). Emails are stored lowercase. Seeded ONCE, when the table
-    # doesn't exist yet - not on every schema run, or a friend the owner
-    # removed would silently reappear. See add_allowed_user & co below.
+    # allowed_users - who may sign in (the owner stays hardcoded in
+    # auth.OWNER_EMAILS as an always-allowed fallback, so a database
+    # problem can never lock them out). Emails are stored lowercase.
+    # Seeded ONCE, when the table doesn't exist yet - not on every schema
+    # run, or a friend the owner removed would silently reappear.
     _allowed_table_existed = con.execute(
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'allowed_users'"
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_schema = current_schema() AND table_name = 'allowed_users'"
     ).fetchone()[0]
     con.execute("""
         CREATE TABLE IF NOT EXISTS allowed_users (
@@ -315,98 +390,6 @@ def _create_schema(con):
             status        TEXT NOT NULL DEFAULT 'Submitted'
         )
     """)
-    # idea_type/status were added after this table already existed in
-    # deployed DBs - CREATE TABLE IF NOT EXISTS above is a no-op against
-    # those, so the columns need adding explicitly too. IF NOT EXISTS
-    # here makes this safe to run against a fresh DB as well, where the
-    # CREATE TABLE just created them already.
-    # No NOT NULL here (unlike the CREATE TABLE above) - DuckDB's ALTER
-    # TABLE ADD COLUMN doesn't support adding a column with a constraint
-    # (confirmed live: raises "Adding columns with constraints not yet
-    # supported"). The DEFAULT alone is enough in practice - every row
-    # is written through add_app_idea(), which always supplies both.
-    con.execute("ALTER TABLE app_ideas ADD COLUMN IF NOT EXISTS idea_type TEXT DEFAULT 'Improvement'")
-    con.execute("ALTER TABLE app_ideas ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Submitted'")
-    _migrate_legacy_single_user_schema(con)
-
-
-def _migrate_legacy_single_user_schema(con):
-    """One-time migration from the pre-multiuser schema (a single `words`
-    table carrying both dictionary content AND this app's one-and-only
-    SM-2 schedule, plus a `quiz_attempts` table with no user_id column)
-    into the word_content/user_words split above.
-
-    Runs on every connection but is a no-op after the first successful
-    run - guarded by checking for the legacy `words` table AND the
-    absence of its own backup, so a second run (e.g. a fresh container
-    on the next redeploy) doesn't try to re-migrate data that's already
-    been moved and had `words` renamed out of the way. The legacy tables
-    are kept around renamed rather than dropped - cheap insurance
-    against a migration bug, costs nothing to leave them.
-
-    All migrated data is attributed to _LEGACY_OWNER_EMAIL - correct,
-    since the app had exactly one user (that account) for everything
-    created before this migration existed."""
-    tables = {r[0] for r in con.execute(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-    ).fetchall()}
-    if "words" not in tables or "words_pre_multiuser_backup" in tables:
-        return
-
-    con.execute("""
-        INSERT INTO word_content (word, definition, part_of_speech, example, synonyms,
-                                   phonetic, audio_url, antonyms, etymology)
-        SELECT word, definition, part_of_speech, example, synonyms,
-               phonetic, audio_url, antonyms, etymology
-        FROM words
-    """)
-    con.execute("""
-        INSERT INTO user_words (user_id, word, date_added, repetition, ease_factor,
-                                 interval_days, next_review_date)
-        SELECT ?, word, date_added, repetition, ease_factor, interval_days, next_review_date
-        FROM words
-    """, [_LEGACY_OWNER_EMAIL])
-
-    # quiz_attempts: _ensure_schema's CREATE TABLE IF NOT EXISTS above
-    # was a no-op for a legacy DB (a table by that name already existed,
-    # just under the old shape with no user_id column) - detect that and
-    # move its data into the new shape via rename + recreate + reinsert,
-    # rather than fighting DuckDB's limited ALTER-constraint support (no
-    # clean way to repoint an existing FK from words(word) to
-    # word_content(word) in place).
-    cols = {r[1] for r in con.execute("PRAGMA table_info('quiz_attempts')").fetchall()}
-    if "user_id" not in cols:
-        con.execute("ALTER TABLE quiz_attempts RENAME TO quiz_attempts_legacy")
-        con.execute("""
-            CREATE TABLE quiz_attempts (
-                id            INTEGER PRIMARY KEY DEFAULT nextval('attempt_id_seq'),
-                user_id       TEXT NOT NULL,
-                word          TEXT NOT NULL REFERENCES word_content(word),
-                attempt_date  TIMESTAMP NOT NULL,
-                your_answer   TEXT NOT NULL,
-                accuracy      INTEGER NOT NULL,
-                got_right     TEXT,
-                got_missed    TEXT,
-                note          TEXT
-            )
-        """)
-        con.execute("""
-            INSERT INTO quiz_attempts (id, user_id, word, attempt_date, your_answer,
-                                        accuracy, got_right, got_missed, note)
-            SELECT id, ?, word, attempt_date, your_answer, accuracy, got_right, got_missed, note
-            FROM quiz_attempts_legacy
-        """, [_LEGACY_OWNER_EMAIL])
-        # Dropped rather than kept as a renamed backup (unlike `words`
-        # below) - it still holds a foreign key pointing at `words`,
-        # which blocks renaming `words` out of the way while anything
-        # still references it (confirmed live: DuckDB's ALTER TABLE
-        # RENAME refuses with a DependencyException in exactly this
-        # case). Safe to drop outright rather than work around that:
-        # every row was just copied into the new quiz_attempts table
-        # above, with nothing lost.
-        con.execute("DROP TABLE quiz_attempts_legacy")
-
-    con.execute("ALTER TABLE words RENAME TO words_pre_multiuser_backup")
 
 
 def add_word(user_id: str, word: str, definition: str, part_of_speech: str = "", example: str = "",
@@ -435,7 +418,7 @@ def add_word(user_id: str, word: str, definition: str, part_of_speech: str = "",
     separate step. This is a no-op (TRUE -> TRUE) for a word that was
     already active, so it never surprises anyone re-adding an active
     word purely for a definition refresh."""
-    con = get_connection(fresh=True)
+    con = get_connection()
     w = word.strip()
     con.execute(
         """
@@ -466,7 +449,6 @@ def add_word(user_id: str, word: str, definition: str, part_of_speech: str = "",
         [user_id, w, datetime.now(timezone.utc), _today_local()],
     )
     con.close()
-    r2_storage.upload_db()
 
 
 def set_audio_url(word: str, audio_url: str):
@@ -474,10 +456,9 @@ def set_audio_url(word: str, audio_url: str):
     without touching its definition or anything else. No user_id: audio
     is dictionary content (word_content), shared like everything else
     there."""
-    con = get_connection(fresh=True)
+    con = get_connection()
     con.execute("UPDATE word_content SET audio_url = ? WHERE word = ?", [audio_url.strip(), word])
     con.close()
-    r2_storage.upload_db()
 
 
 def delete_word(user_id: str, word: str):
@@ -487,11 +468,10 @@ def delete_word(user_id: str, word: str):
     word_content row with no user_words referencing it just sits there
     unused afterward - harmless, not worth an extra query to garbage-
     collect it."""
-    con = get_connection(fresh=True)
+    con = get_connection()
     con.execute("DELETE FROM quiz_attempts WHERE user_id = ? AND word = ?", [user_id, word])
     con.execute("DELETE FROM user_words WHERE user_id = ? AND word = ?", [user_id, word])
     con.close()
-    r2_storage.upload_db()
 
 
 def deactivate_word(user_id: str, word: str):
@@ -511,10 +491,9 @@ def deactivate_word(user_id: str, word: str):
     request, so this function has no UI counterpart there either -
     Quiz Me's deactivate icon is the only place a word gets turned off
     at all."""
-    con = get_connection(fresh=True)
+    con = get_connection()
     con.execute("UPDATE user_words SET active = FALSE WHERE user_id = ? AND word = ?", [user_id, word])
     con.close()
-    r2_storage.upload_db()
 
 
 def get_all_words(user_id: str, include_inactive: bool = False):
@@ -676,7 +655,7 @@ def update_schedule(user_id: str, word: str, accuracy: int):
     standard SM-2 interval/ease-factor update. Returns the new schedule
     so the caller can show "next review in N days."
     """
-    con = get_connection(fresh=True)
+    con = get_connection()
     row = con.execute(
         "SELECT repetition, ease_factor, interval_days FROM user_words WHERE user_id = ? AND word = ?",
         [user_id, word],
@@ -724,7 +703,6 @@ def update_schedule(user_id: str, word: str, accuracy: int):
         [repetition, ease_factor, interval_days, next_review_date, user_id, word],
     )
     con.close()
-    r2_storage.upload_db()
     return {"repetition": repetition, "interval_days": interval_days, "next_review_date": next_review_date}
 
 
@@ -847,7 +825,7 @@ def save_attempt(user_id: str, word: str, your_answer: str, accuracy: int, feedb
     data in them) but new attempts just write "" to both and put the
     whole tagged feedback in note, rather than a schema migration to
     drop two now-unused columns."""
-    con = get_connection(fresh=True)
+    con = get_connection()
     con.execute(
         """
         INSERT INTO quiz_attempts (user_id, word, attempt_date, your_answer, accuracy, got_right, got_missed, note)
@@ -856,7 +834,6 @@ def save_attempt(user_id: str, word: str, your_answer: str, accuracy: int, feedb
         [user_id, word, datetime.now(timezone.utc), your_answer, accuracy, "", "", feedback],
     )
     con.close()
-    r2_storage.upload_db()
 
 
 def get_attempts(user_id: str, word: str):
@@ -921,7 +898,7 @@ def save_user_settings(
     avatar_icon: str | None = None, avatar_primary: str | None = None,
     avatar_secondary: str | None = None,
 ):
-    con = get_connection(fresh=True)
+    con = get_connection()
     con.execute(
         """
         INSERT INTO user_settings
@@ -946,21 +923,15 @@ def save_user_settings(
         ],
     )
     con.close()
-    r2_storage.upload_db()
 
 
 def _normalize_email(email: str) -> str:
     return (email or "").strip().lower()
 
 
-def is_email_allowed(email: str, refresh: bool = False) -> bool:
-    """Whether `email` is on the invite list. refresh=True re-pulls from
-    R2 first (get_connection(fresh=True)) - used by the login check only
-    after a plain cached read says "no", so an invite the owner just
-    added from another process (the deployed app vs a local one) is seen
-    right away instead of only after this process restarts, without
-    paying a download on every normal login."""
-    con = get_connection(fresh=refresh)
+def is_email_allowed(email: str) -> bool:
+    """Whether `email` is on the invite list."""
+    con = get_connection()
     row = con.execute(
         "SELECT 1 FROM allowed_users WHERE email = ?", [_normalize_email(email)]
     ).fetchone()
@@ -999,18 +970,17 @@ def add_allowed_user(email: str, added_by: str) -> bool:
     (nothing changes), True if newly added. Validation (is it an email
     at all) is the caller's job - see app.py's Members page."""
     email = _normalize_email(email)
-    con = get_connection(fresh=True)
-    existed = con.execute("SELECT 1 FROM allowed_users WHERE email = ?", [email]).fetchone()
-    if existed:
-        con.close()
-        return False
-    con.execute(
-        "INSERT INTO allowed_users (email, added_by, added_at) VALUES (?, ?, ?)",
+    con = get_connection()
+    # One atomic statement: a row comes back only if THIS call inserted
+    # it, so two simultaneous invites of the same address can't both
+    # report "newly added".
+    inserted = con.execute(
+        "INSERT INTO allowed_users (email, added_by, added_at) VALUES (?, ?, ?) "
+        "ON CONFLICT (email) DO NOTHING RETURNING email",
         [email, added_by, datetime.now(timezone.utc)],
-    )
+    ).fetchone()
     con.close()
-    r2_storage.upload_db()
-    return True
+    return inserted is not None
 
 
 def remove_allowed_user(email: str) -> None:
@@ -1019,10 +989,9 @@ def remove_allowed_user(email: str) -> None:
     re-inviting them later puts everything back exactly as it was. (The
     owner can't be locked out regardless: auth.OWNER_EMAILS is checked
     first, independent of this table.)"""
-    con = get_connection(fresh=True)
+    con = get_connection()
     con.execute("DELETE FROM allowed_users WHERE email = ?", [_normalize_email(email)])
     con.close()
-    r2_storage.upload_db()
 
 
 def is_new_user(user_id: str) -> bool:
@@ -1054,19 +1023,23 @@ def initialize_new_user(user_id: str) -> int:
       dates would, for the handful someone else added in the last week
       (confirmed in testing: 12 phantom adds on a copy of the real data).
 
-    Settings row first, in the same connection: its existence is the
-    "already initialized" check, so a second concurrent call that gets
-    here after the first finishes is a no-op."""
-    con = get_connection(fresh=True)
-    if con.execute("SELECT 1 FROM user_settings WHERE user_id = ?", [user_id]).fetchone():
-        con.close()
-        return 0
-    con.execute(
+    The settings row is the "already initialized" marker, claimed
+    atomically: ON CONFLICT DO NOTHING ... RETURNING yields a row only
+    for the one call that actually inserted it, so two sessions racing
+    on a friend's first login can't both seed the word list. Everything
+    here is one transaction (see _Conn), so a failure part-way leaves
+    no half-initialized user behind."""
+    con = get_connection()
+    claimed = con.execute(
         "INSERT INTO user_settings "
         "(user_id, alias, auto_add_community_words, share_progress, daily_word_target, dark_mode, handedness) "
-        "VALUES (?, '', FALSE, TRUE, 10, FALSE, 'Right')",
+        "VALUES (?, '', FALSE, TRUE, 10, FALSE, 'Right') "
+        "ON CONFLICT (user_id) DO NOTHING RETURNING user_id",
         [user_id],
-    )
+    ).fetchone()
+    if not claimed:
+        con.close()
+        return 0
     con.execute(
         """
         INSERT INTO user_words (user_id, word, date_added, repetition, ease_factor, interval_days, next_review_date)
@@ -1087,7 +1060,6 @@ def initialize_new_user(user_id: str) -> int:
     )
     seeded = con.execute("SELECT COUNT(*) FROM user_words WHERE user_id = ?", [user_id]).fetchone()[0]
     con.close()
-    r2_storage.upload_db()
     return seeded
 
 
@@ -1095,14 +1067,13 @@ def add_app_idea(user_id: str, idea_text: str, idea_type: str = "Improvement") -
     """Returns the new idea's id - app_idea_id_seq's nextval, the same
     number displayed everywhere as "ID-0001" (see app.py's format_idea_id)
     - so the submission confirmation can show it immediately."""
-    con = get_connection(fresh=True)
+    con = get_connection()
     idea_id = con.execute(
         "INSERT INTO app_ideas (user_id, idea_text, submitted_at, idea_type, status) "
         "VALUES (?, ?, ?, ?, 'Submitted') RETURNING id",
         [user_id, idea_text.strip(), datetime.now(timezone.utc), idea_type],
     ).fetchone()[0]
     con.close()
-    r2_storage.upload_db()
     return idea_id
 
 
@@ -1141,10 +1112,9 @@ def get_all_app_ideas() -> list[dict]:
 def update_app_idea_status(idea_id: int, status: str):
     """Owner-only (enforced in app.py, not here) - marks an idea
     Submitted/Rejected/Completed once it's been reviewed or built."""
-    con = get_connection(fresh=True)
+    con = get_connection()
     con.execute("UPDATE app_ideas SET status = ? WHERE id = ?", [status, idea_id])
     con.close()
-    r2_storage.upload_db()
 
 
 def _display_name(user_id: str, alias: str) -> str:

@@ -25,8 +25,6 @@ Google Cloud console - being on the invite list here isn't enough on its
 own until the app is published to Production there.
 """
 
-import time
-
 import streamlit as st
 
 import db
@@ -37,12 +35,6 @@ OWNER_EMAILS = {
     "adamrutter2469@gmail.com",
 }
 
-# How often a denied visitor's rerun may trigger a fresh pull from R2 to
-# re-check the invite list (see require_login) - an invite is usually
-# added right before the person tries to sign in, but a denied session
-# shouldn't be able to make every rerun re-download the database.
-_DENIED_REFRESH_SECONDS = 30
-
 
 def is_owner(email) -> bool:
     return bool(email) and email.strip().lower() in OWNER_EMAILS
@@ -52,16 +44,7 @@ def _is_allowed(email: str) -> bool:
     if is_owner(email):
         return True
     try:
-        if db.is_email_allowed(email):
-            return True
-        # Not on the (possibly stale, once-per-process) cached copy -
-        # check R2's current state before turning someone away, at most
-        # once per _DENIED_REFRESH_SECONDS per session.
-        last = st.session_state.get("_allow_refresh_ts", 0.0)
-        if time.time() - last < _DENIED_REFRESH_SECONDS:
-            return False
-        st.session_state["_allow_refresh_ts"] = time.time()
-        return db.is_email_allowed(email, refresh=True)
+        return db.is_email_allowed(email)
     except Exception:
         st.error("Couldn't check the invite list right now - please try again in a moment.")
         st.stop()

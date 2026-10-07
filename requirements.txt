@@ -2,9 +2,10 @@ altair==6.2.2
 anthropic==0.122.0
 Authlib>=1.3.2
 boto3==1.43.72
-duckdb==1.5.5
+duckdb==1.5.5  # only for scripts/migrate_duckdb_to_postgres.py - drop after cutover
 pandas==2.3.3
 pillow==11.3.0
+psycopg[binary,pool]==3.3.6
 pydantic==2.12.5
 python-dotenv==1.2.2
 requests==2.32.5

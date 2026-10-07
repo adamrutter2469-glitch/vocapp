@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8
+pgserver>=0.1.4   # embedded PostgreSQL for tests/ - no install or cloud DB needed
